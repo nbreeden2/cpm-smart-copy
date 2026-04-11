@@ -1,8 +1,8 @@
 # Build artifacts
 *.REL
-*.COM
 *.PRN
 *.SYM
+SCOPY.COM
 
 # User-specific build config
 build-hdd.bat
