@@ -1,0 +1,506 @@
+
+================================================================
+SCOPY v1.0 - Smart Copy for CP/M 2.2
+Technical Reference
+================================================================
+
+
+1. BUILD PROCEDURE
+
+1.1. Requirements
+
+   - Microsoft M80 Macro Assembler (M80.COM)
+   - Microsoft L80 Linker (L80.COM)
+   - Python 3 (for CPMFMT.PY source formatter)
+
+1.2. Source Files
+
+   SCOPY.MAC    Main (and only) assembly source file
+   CPMFMT.PY    Converts source to CP/M text format
+                (CR/LF line endings, Ctrl-Z EOF)
+
+1.3. Build Steps
+
+   On the CP/M system:
+
+     M80 =SCOPY
+     L80 SCOPY,SCOPY/N/E
+
+   Using the DOS build script:
+
+     build-all.bat
+
+   The build script runs CPMFMT.PY automatically,
+   then invokes M80 and L80 via cpmulator.exe.
+
+1.4. CP/M Submit File
+
+   BUILD.SUB can be used on the CP/M system:
+
+     SUBMIT BUILD
+
+
+2. PROGRAM STRUCTURE
+
+   SCOPY is a single-file 8080 assembly program
+   assembled with M80 into a CP/M .COM transient
+   command. All code, data, and buffers reside in
+   a single source file (SCOPY.MAC).
+
+2.1. Memory Map
+
+   0000H-0007H   Warm boot vector, IOBYTE, drive
+   0005H-0007H   BDOS entry (JMP + address)
+   0080H-00FFH   Command tail / default DMA buffer
+   0100H         Program entry point (ORG 100H)
+   ....H         Code section
+   ....H         Message strings
+   ....H         Data variables
+   ....H         FCBs (TABFCB, WRKFCB, DIRFCB,
+                       SFCB, DFCB)
+   ....H         DMA buffer (128 bytes)
+   ....H         TAB match list (64 x 11 = 704 bytes)
+   ....H         File list (128 x 11 = 1408 bytes)
+   ....H         Stack (128 bytes, 64 levels)
+   BUFST         Copy buffer start (label at end of
+                 data; extends to BDOS base)
+   ....H         BDOS base (address from 0006H)
+
+   The copy buffer dynamically uses all free TPA
+   memory between the end of the program's data and
+   the BDOS entry point.
+
+
+3. FUNCTION REFERENCE
+
+3.1. Main Flow
+
+   MAIN
+     Program entry point. Sets up the stack, saves
+     the current drive and user area, displays the
+     version banner, parses the command line, and
+     dispatches to the appropriate mode (command line
+     or interactive).
+
+   VALID
+     Central validation and execution entry point.
+     Called after source and destination have been
+     parsed (from either command line or interactive
+     mode). Runs all validation checks, pre-flight
+     capacity analysis, displays the summary, and
+     invokes the copy engine.
+
+3.2. System State
+
+   GSTATE
+     Saves the current drive (BDOS 25) in CDRV and
+     the current user area (BDOS 32) in CUSR. Called
+     once at startup.
+
+   SETSRC
+     Sets the source user area and drive. Resolves
+     NSPC values to the saved current state.
+
+   SETDST
+     Sets the destination user area and drive.
+
+   SETSU
+     Sets only the source user area. Resolves NSPC
+     to CUSR. Used during copy operations where the
+     FCB drive byte handles drive selection.
+
+   SETDU
+     Sets only the destination user area.
+
+   RESTOR
+     Restores the original user area and drive from
+     CUSR and CDRV.
+
+   RSLVSD
+     Returns the resolved source drive number + 1
+     (for use as FCB byte 0). Resolves NSPC to CDRV.
+
+   RSLVDD
+     Returns the resolved dest drive number + 1.
+
+3.3. Command Line Parsing
+
+   CHKHLP
+     Scans the command tail for /?. Returns carry
+     set if found.
+
+   SKPSPC
+     Advances HL/B past space characters. Returns
+     the next non-space character in A, or 0 if the
+     input is exhausted.
+
+   PSPEC
+     Parses a file specification from the command
+     tail or interactive input. Handles the full
+     [user]drive:filename.ext syntax including the
+     "." shorthand for current drive/user. Uses
+     TXTPT/TXTCNT for input position and TGTPT for
+     the 13-byte output block (user, drive, 11-byte
+     filename). Returns carry on parse error.
+
+   PDEC
+     Parses a 1-2 digit decimal number from text.
+     Used for user area numbers. Returns value in A,
+     carry set on error.
+
+   PFLAGS
+     Parses option flags (/V, /C, /R, /Q) from the
+     remaining command tail. Sets the corresponding
+     flag bytes. Returns carry on unknown flag.
+
+   TOUPR
+     Converts ASCII character in A to uppercase.
+
+   CHKFN
+     Checks if an 11-byte filename area is all
+     spaces (no filename specified). Returns carry
+     if all spaces.
+
+3.4. Validation
+
+   CHKWRN
+     Checks for wildcards in the source combined
+     with a rename destination. Returns carry if
+     both are present (invalid combination).
+
+   CHKSLF
+     Checks that the source and destination do not
+     resolve to the same drive, user area, and
+     filename. Resolves NSPC defaults before
+     comparing. Returns carry if self-copy detected.
+
+   VDSTFN
+     Validates characters in the destination filename.
+     Rejects wildcards (*, ?) and CP/M invalid
+     characters (<, >, comma, semicolon, colon, =,
+     brackets, pipe, backslash, control chars).
+     Returns carry with BADCHR set if invalid.
+
+3.5. Interactive Mode
+
+   GETLIN
+     Line editor for interactive input. Reads
+     characters one at a time using BDOS 6 (Direct
+     Console I/O) to intercept TAB before the BDOS
+     line editor processes it. Handles printable
+     characters, backspace, DELETE, CR, CTRL-C,
+     and TAB. Stores input in LINBUF, length in
+     LINLEN. Converts all input to uppercase.
+
+   TABCMP
+     TAB completion handler. On first press: calls
+     TPARSE to analyze the input, then TABSRC to
+     search the directory. Caches matches and
+     displays the first one. On subsequent presses:
+     cycles to the next match (circular). Rings
+     the bell if no matches or if wildcards are
+     present.
+
+   TPARSE
+     Parses LINBUF to extract the TAB completion
+     context: user area, drive, and partial filename.
+     Builds a search FCB (TABFCB) with the partial
+     name padded with ? characters. Always resolves
+     the FCB drive byte explicitly (never uses
+     default drive 0). Sets PFXLEN to the length of
+     the [user]drive: prefix that stays on screen
+     during completion cycling.
+
+   TABSRC
+     Searches the directory for TAB completion
+     matches. Sets the user area and drive, uses
+     DMABUF for directory I/O, and fills TABMAT
+     with deduplicated 11-byte filenames. Strips
+     attribute high bits. Restores user/drive on
+     return. Maximum 64 matches (MAXTAB).
+
+3.6. Pre-Flight (Phase 3)
+
+   EXPAND
+     Expands the source wildcard into a file list.
+     Searches the source directory using WRKFCB,
+     deduplicates multi-extent files (via ISDUPF),
+     fills FLIST with 11-byte filenames, counts
+     total directory extents in SRCEXT. Maximum
+     128 files (MAXFLS). Jumps to ERRNOF if no
+     files match.
+
+   CALCSZ
+     Calculates the total source file size in KB.
+     Iterates through FLIST, uses BDOS 35 (Compute
+     File Size) for each file to get the record
+     count, converts to KB via (records+7)/8, and
+     accumulates in TOTSIZ.
+
+   CHKDST
+     Checks destination disk capacity. Reads the
+     Disk Parameter Block (BDOS 31) to extract BSH,
+     DSM, and DRM. Gets the allocation vector
+     (BDOS 27) and counts free blocks (CNTFRE).
+     Converts to free KB using the block shift
+     factor. Counts free directory entries (CNTDIR).
+     Compares source needs against destination
+     capacity. Jumps to ERRSPC or ERRDIE on
+     failure.
+
+   CNTFRE
+     Counts free blocks in the allocation vector.
+     Walks bit-by-bit through (DSM+1) bits. A zero
+     bit indicates a free block. Stores the count
+     in FREBKS.
+
+   CNTDIR
+     Counts free directory entries on the destination
+     disk. Uses the FCB byte 0 = '?' trick to search
+     across all user areas in a single pass. Filters
+     out deleted entries (user byte = E5H). Computes
+     free = (DRM+1) - used. Stores in DSTDIR.
+
+3.7. Copy Engine (Phase 4)
+
+   DOCOPY
+     Main copy orchestrator. Calculates the copy
+     buffer size from available TPA memory (BUFST
+     to BDOS base). Iterates through FLIST, handling
+     /C confirmation, /Q quiet mode, overwrite
+     prompting, and file creation. For each file,
+     runs the multi-pass copy loop, closes files,
+     copies attributes, optionally verifies, and
+     updates counters. Displays per-file status
+     and a final summary.
+
+     Buffer size calculation:
+       Buffer end = [0006H] - 1 (one below BDOS)
+       Buffer size = BUFEND - BUFST
+       Records per buffer = size / 128
+
+     Copy is performed by record count (BDOS 35),
+     NOT by scanning for Ctrl-Z EOF markers. This
+     ensures binary files are copied correctly.
+
+   Multi-pass copy loop:
+     For each pass:
+       1. Calculate records this pass =
+          min(BUFREC, RECREQ)
+       2. Set source user area
+       3. Read all records into buffer (BUFST),
+          advancing DMA by 128 per record
+       4. Set destination user area
+       5. Write all records from buffer,
+          advancing DMA by 128 per record
+       6. Subtract records copied from RECREQ
+       7. Repeat until RECREQ = 0
+
+   BLDSFCB
+     Builds the source FCB (SFCB) from CPYFN with
+     the resolved source drive in byte 0.
+
+   BLDDFCB
+     Builds the destination FCB (DFCB) from DSTFN
+     with the resolved dest drive in byte 0.
+
+   BLDWFCB
+     Builds WRKFCB from CPYFN for use with BDOS 35
+     (Compute File Size).
+
+   CPYATT
+     Copies file attributes from source to dest.
+     Searches the source directory to read the R/O,
+     SYS, and Archive attribute bits (high bit of
+     extension bytes t1, t2, t3). Applies them to
+     the destination file using BDOS 30 (Set File
+     Attributes).
+
+   DOVERFY
+     Verifies a copied file by read-back comparison.
+     Reopens both source and destination files, reads
+     one record at a time from each into BUFST and
+     BUFST+128, and compares 128 bytes. Returns
+     carry set if any mismatch is found.
+
+   GETYN
+     Reads a Y/N response using BDOS 6 (no echo),
+     converts to uppercase, echoes the result.
+     Returns 'Y' or 'N' in A.
+
+3.8. Display Routines
+
+   SHSUM
+     Displays the pre-flight summary showing source
+     file count and total size, destination free
+     space and free directory entries.
+
+   SHFNL
+     Formats and displays an 11-byte FCB filename
+     to the console as NAME.EXT (via FMTFN).
+
+   FMTFN
+     Formats an 11-byte FCB filename into a NAME.EXT
+     string in a buffer. Trims trailing spaces from
+     both name and extension. Returns the formatted
+     length in A.
+
+   SHFN
+     Displays an 11-byte FCB filename directly to
+     the console with trailing space trimming.
+
+   SHUSR
+     Displays a user number in brackets: [N].
+     Resolves NSPC to the current user.
+
+   SHDRV
+     Displays a drive letter with colon: D:.
+     Resolves NSPC to the current drive.
+
+   DECOUT
+     Prints register A as a decimal number (0-255)
+     with leading zero suppression.
+
+   DEC16
+     Prints register pair HL as a decimal number
+     (0-65535) with leading zero suppression. Uses
+     repeated subtraction for each decimal position.
+
+   COUT
+     Outputs character in A to the console via
+     BDOS 2. Preserves all registers.
+
+   CRLF
+     Outputs a carriage return and line feed.
+
+   PRMSG
+     Prints a $-terminated string via BDOS 9.
+
+   ERASCR
+     Erases A characters from the console by sending
+     backspace-space-backspace sequences.
+
+3.9. Utility Routines
+
+   MUL11
+     Multiplies A by 11, result in HL. Used for
+     indexing into 11-byte filename tables (TABMAT,
+     FLIST). Computes as A*8 + A*3 using DAD.
+
+   SHR16
+     Logical shift right of HL by 1 bit. Used
+     three times in sequence for division by 8
+     (records to KB conversion).
+
+   ISDUPE
+     Checks if TMPFN (11 bytes) already exists in
+     TABMAT. Returns carry if duplicate found.
+     Used during TAB completion to skip multi-extent
+     directory entries.
+
+   ISDUPF
+     Same as ISDUPE but checks against FLIST/FCNT.
+     Used during wildcard expansion.
+
+
+4. BDOS FUNCTIONS USED
+
+   0    System Reset (warm boot on exit)
+   1    Console Input (not currently used)
+   2    Console Output (character display)
+   6    Direct Console I/O (line editor, Y/N input)
+   9    Print String ($-terminated)
+   14   Select Disk
+   15   Open File
+   16   Close File
+   17   Search for First
+   18   Search for Next
+   19   Delete File
+   20   Read Sequential
+   21   Write Sequential
+   22   Make File (create)
+   25   Return Current Disk
+   26   Set DMA Address
+   27   Get Allocation Vector Address
+   30   Set File Attributes
+   31   Get Disk Parameter Block Address
+   32   Set/Get User Code
+   35   Compute File Size
+
+
+5. KEY DATA STRUCTURES
+
+   Source/Dest File Spec (13 bytes each):
+     Byte 0     User number (0-15, or FFH=current)
+     Byte 1     Drive number (0-15, or FFH=current)
+     Bytes 2-12 Filename in FCB format (8+3, space
+                padded)
+
+   File List (FLIST, 128 x 11 bytes):
+     Array of matched source filenames in 8+3 FCB
+     format. Deduplicated (no multi-extent repeats).
+     Indexed by FCNT.
+
+   TAB Match List (TABMAT, 64 x 11 bytes):
+     Array of filenames matching the TAB completion
+     partial input. Indexed by TABCNT/TABIDX.
+
+   FCBs (36 bytes each):
+     Standard CP/M File Control Blocks used for
+     BDOS file operations. Byte 0 is always set to
+     the explicit drive code (1=A, 2=B, etc.),
+     never left as 0 (default).
+
+   Copy Buffer (BUFST to BUFEND):
+     Dynamically sized at runtime. Uses all TPA
+     between the end of program data and the BDOS
+     base address. Size is calculated as:
+       BUFEND = [0006H] - 1
+       Records = (BUFEND - BUFST) / 128
+
+
+6. DESIGN DECISIONS
+
+   Binary-safe copying:
+     Files are copied by record count obtained from
+     BDOS 35 (Compute File Size), not by scanning
+     for Ctrl-Z (1AH) EOF markers. Binary files
+     such as .COM executables may contain embedded
+     1AH bytes as valid data.
+
+   Explicit drive resolution:
+     FCB byte 0 is always set to the explicit drive
+     code rather than 0 (default drive). This avoids
+     issues with some CP/M implementations where
+     the default drive does not resolve correctly
+     after a user area change.
+
+   Pre-flight space checking:
+     All source files are enumerated and their total
+     size calculated before any copying begins. The
+     destination's free space and directory entries
+     are checked against the total requirements.
+     This prevents partial copies that would leave
+     the destination in an inconsistent state.
+
+   User area switching:
+     During copy operations, only the user area is
+     switched between read and write passes. The
+     FCB drive byte handles drive selection,
+     avoiding unnecessary SELDSK calls. User area
+     is always set explicitly (NSPC resolved to
+     saved CUSR), never left to chance.
+
+   Directory deduplication:
+     Files spanning multiple directory extents
+     produce multiple search results. Both the TAB
+     completion and wildcard expansion routines
+     check for duplicate filenames before adding
+     to their respective lists. Attribute high bits
+     are stripped before comparison.
+
+
+================================================================
+END OF TECHNICAL REFERENCE
+================================================================
+

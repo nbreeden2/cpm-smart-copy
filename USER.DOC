@@ -1,0 +1,269 @@
+
+================================================================
+SCOPY v1.0 - Smart Copy for CP/M 2.2
+User Manual
+================================================================
+
+
+1. INTRODUCTION
+
+   SCOPY is a file copy utility for CP/M 2.2 that supports
+   copying files across drives and user areas. It provides
+   an intuitive left-to-right command syntax, wildcard
+   support, interactive mode with TAB filename completion,
+   and pre-flight capacity checking.
+
+
+2. COMMAND LINE USAGE
+
+   SCOPY source destination [/options]
+
+   Source and destination are file specifications:
+
+     [user]drive:filename.ext
+
+   All parts are optional:
+
+     [user]   User area 0-15 in brackets. Defaults to
+              the current user area.
+     drive:   Drive letter A-P with colon. Defaults to
+              the current drive.
+     filename Filename, 1-8 characters. Wildcards * and ?
+              are supported in the source only.
+     .ext     Extension, 0-3 characters.
+
+   The special destination "." means the current drive and
+   current user area.
+
+
+3. EXAMPLES
+
+   SCOPY FILE.COM B:
+     Copy FILE.COM from the current drive/user to B:.
+
+   SCOPY B:FILE.COM .
+     Copy FILE.COM from B: to the current drive/user.
+
+   SCOPY *.MAC B:
+     Copy all .MAC files to B:.
+
+   SCOPY [3]FILE.COM [5]B:
+     Copy FILE.COM from user 3 on the current drive
+     to user 5 on B:.
+
+   SCOPY [0]A:*.COM [3]B:
+     Copy all .COM files from user 0 on A: to user 3
+     on B:.
+
+   SCOPY *.ASM [2]
+     Copy all .ASM files to user 2 on the current drive.
+
+   SCOPY FOO.COM B:BAR.COM
+     Copy FOO.COM to B: and rename it to BAR.COM.
+     Rename is only allowed for single file copies,
+     not with wildcards.
+
+
+4. OPTIONS
+
+   Options are specified after the destination, preceded
+   by a forward slash. Multiple flags can be combined.
+
+   /V   Verify each file after copying by reading back
+        the destination and comparing it byte-for-byte
+        with the source. Displays "OK, Verified" on
+        success or "Verify FAILED" on mismatch.
+
+   /C   Confirm each file before copying. SCOPY prompts
+        "Copy FILENAME.EXT? (Y/N)" for each file. Press
+        Y to copy or any other key to skip.
+
+   /R   Replace existing files without prompting. By
+        default, SCOPY asks before overwriting. This
+        flag suppresses the overwrite prompt.
+
+   /Q   Quiet mode. Suppresses per-file output. Only
+        the summary and any errors are displayed.
+
+   Flags may be combined: /VC or specified separately:
+   /V /C
+
+   Examples:
+     SCOPY *.COM B: /V
+     SCOPY *.* [3]B: /RC
+     SCOPY *.MAC B: /V /Q
+
+
+5. INTERACTIVE MODE
+
+   Running SCOPY with no arguments (or with only flags)
+   enters interactive mode:
+
+     I>SCOPY
+     SCOPY v1.0 - Smart Copy for CP/M 2.2
+     Source: _
+     Dest:   _
+
+   If only the source is given on the command line, SCOPY
+   prompts for the destination:
+
+     I>SCOPY *.COM
+     Dest:   _
+
+   Flags can be specified on the command line before
+   entering interactive mode:
+
+     I>SCOPY /V
+     Source: _
+
+5.1. TAB Filename Completion
+
+   In interactive mode, pressing TAB completes the
+   filename you are typing:
+
+     Source: SC         <press TAB>
+     Source: SCOPY.MAC  <completed>
+
+   Each subsequent TAB press cycles to the next matching
+   filename. After the last match, it wraps to the first.
+   If no files match the partial name, the terminal bell
+   sounds.
+
+   TAB completion works with user area and drive prefixes:
+
+     Source: [2]B:AS    <press TAB>
+     Source: [2]B:ASM.COM
+
+   The user/drive prefix stays on screen; only the
+   filename portion cycles.
+
+   TAB is ignored if the partial input contains wildcard
+   characters (* or ?).
+
+5.2. Line Editing
+
+   The following keys are available in interactive mode:
+
+     Backspace   Delete the last character
+     DELETE      Same as Backspace
+     RETURN      Accept the current input
+     CTRL-C      Abort and exit SCOPY
+     TAB         Filename completion (see above)
+
+
+6. PRE-FLIGHT CHECKS
+
+   Before copying, SCOPY validates:
+
+   - The source file(s) exist
+   - The destination has enough free disk space
+   - The destination has enough free directory entries
+   - You are not copying a file onto itself
+
+   If any check fails, SCOPY displays an error with
+   details and exits without copying.
+
+   If all checks pass, a summary is displayed:
+
+     Source: [0]A:*.COM (5 files, 48K)
+     Dest:   [3]B:      (112K free, 38 dir entries free)
+
+
+7. COPY OPERATION
+
+   Files are copied using all available memory as a
+   buffer. Large files are handled automatically with
+   multiple read/write passes.
+
+   Files are copied by record count, not by scanning
+   for end-of-file markers. This ensures binary files
+   (such as .COM programs) are copied correctly even
+   if they contain embedded CTRL-Z bytes.
+
+   During the copy, each file's progress is shown:
+
+     Copying STAT.COM ...OK
+     Copying PIP.COM ...OK
+     Copying ASM.COM ...OK, Verified
+
+   After all files are copied, a summary is displayed:
+
+     3 file(s) copied, 48K transferred
+
+
+8. OVERWRITE BEHAVIOR
+
+   If a destination file already exists:
+
+   - By default, SCOPY prompts:
+     "Overwrite FILENAME.EXT? (Y/N)"
+     Press Y to overwrite, or any other key to skip.
+
+   - With /R, existing files are replaced without
+     prompting.
+
+   - If the existing file is marked Read-Only, SCOPY
+     clears the R/O attribute before overwriting.
+
+   File attributes (Read-Only, System, Archive) are
+   preserved from the source file after copying.
+
+
+9. ERROR MESSAGES
+
+   No matching files
+     The source file specification did not match any
+     files on the source drive/user.
+
+   Cannot copy file to itself
+     The source and destination resolve to the same
+     drive, user area, and filename.
+
+   Insufficient disk space (need XXK, have XXK)
+     The destination drive does not have enough free
+     space for the files to be copied.
+
+   Insufficient directory space (need XX, have XX free)
+     The destination drive does not have enough free
+     directory entries for the file extents.
+
+   Rename not allowed with wildcards
+     A destination filename was specified together with
+     wildcards in the source. Rename only works for
+     single file copies.
+
+   Read error / Write error
+     A disk I/O error occurred during the copy.
+
+   Cannot create file / Cannot open file
+     The file could not be created or opened. The
+     directory may be full or the disk may have errors.
+
+   Cannot delete file
+     An existing destination file could not be deleted,
+     even after clearing the Read-Only attribute.
+
+   Verify FAILED
+     The read-back comparison did not match. The copied
+     file may be corrupt. Check the destination disk.
+
+
+10. LIMITATIONS
+
+   - Requires CP/M 2.2 or compatible
+   - Maximum user area: 15
+   - Maximum files per wildcard: 128
+   - Wildcard rename is not supported
+   - TAB completion shows up to 64 matches
+
+
+11. HELP
+
+   Type SCOPY /? at the command prompt for a quick
+   usage summary.
+
+
+================================================================
+END OF USER MANUAL
+================================================================
+
