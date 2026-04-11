@@ -1,0 +1,521 @@
+================================================================
+SCOPY - Smart Copy for CP/M 2.2
+Specification Document
+Version 1.0 — April 2026
+================================================================
+
+1. OVERVIEW
+----------------------------------------------------------------
+
+SCOPY is a file copy utility for CP/M 2.2 that supports
+copying files across drives, across user areas, and within
+the same drive and user area (with rename). It replaces PIP
+for file copy operations with an intuitive left-to-right
+syntax and full user area support.
+
+Target platform:  CP/M 2.2 (IMSAI 8080)
+Toolchain:        Microsoft M80 Macro Assembler / L80 Linker
+Output:           SCOPY.COM (transient command, loaded at 0100H)
+
+
+2. COMMAND LINE SYNTAX
+----------------------------------------------------------------
+
+  SCOPY source destination [/options]
+
+Source and destination are file specifications in the form:
+
+  [user]drive:filename.ext
+
+All parts are optional with sensible defaults:
+
+  [user]  — User area 0-15 in brackets. Default: current user.
+  drive:  — Drive letter A-P followed by colon. Default: current drive.
+  filename.ext — Filename (1-8 chars) and extension (0-3 chars).
+                 Wildcards * and ? are supported in source only.
+
+The special destination "." means the current drive and current
+user area.
+
+2.1. Examples
+
+  SCOPY FILE.COM B:              Current user, current drive to B:
+  SCOPY B:FILE.COM .             B: to current drive, same user
+  SCOPY [3]FILE.COM [5]B:        User 3 current drive to user 5 B:
+  SCOPY [0]A:*.COM [3]B:         User 0 A: all .COM to user 3 B:
+  SCOPY *.ASM [2]                Current drive to user 2, same drive
+  SCOPY [4]B:README.ME .         User 4 B: to current user/drive
+  SCOPY FOO.COM B:BAR.COM        Copy and rename (single file only)
+
+2.2. Option Flags
+
+  /V  — Verify after copy (read-back compare of each file)
+  /C  — Confirm each file before copying (Y/N prompt)
+  /R  — Replace existing files without prompting
+  /Q  — Quiet mode, suppress per-file output
+
+Multiple flags may be combined: /VC or /V /C
+
+Default behavior (no flags):
+  - Show each filename as it is copied
+  - Prompt before overwriting an existing file
+  - No verify pass
+
+
+3. TAB FILENAME COMPLETION
+----------------------------------------------------------------
+
+SCOPY provides interactive filename completion using the TAB
+key. Since the CCP command tail is already parsed before SCOPY
+runs, TAB completion is available when SCOPY prompts for input
+interactively. This occurs when:
+
+  - SCOPY is run with no arguments — it prompts for source
+    and destination separately.
+  - SCOPY is run with only a source — it prompts for the
+    destination.
+
+3.1. Interactive Prompts
+
+  When arguments are missing, SCOPY prompts:
+
+    Source: _
+    Dest:   _
+
+  The user types a partial file specification and presses TAB
+  to trigger completion. The full command line editing keys
+  are available: backspace to delete, CTRL-C to abort, and
+  RETURN to accept the current input.
+
+3.2. Completion Behavior
+
+  As the user types a partial file specification such as:
+
+    Source: [2]B:AS
+
+  Pressing TAB triggers the following:
+
+  1. Parse the partial input to extract the user area, drive,
+     and partial filename.
+  2. Set the specified user area (or current user if omitted).
+  3. Select the specified drive (or current drive if omitted).
+  4. Build an ambiguous FCB from the partial input by padding
+     the partial filename with "?" characters.
+     Example: "AS" becomes "AS??????.???"
+  5. Search the directory using BDOS functions 17/18 (Search
+     First / Search Next) to find all matching filenames.
+  6. Display the first matching filename, replacing the
+     partial text on the console line.
+     Example: the line becomes "Source: [2]B:ASM.COM"
+  7. Each subsequent TAB press cycles to the next matching
+     filename in directory order.
+  8. After the last match, the next TAB wraps back to the
+     first match (circular cycling).
+  9. If no filenames match the partial input, send BEL (07H)
+     to ring the terminal bell. The partial input is left
+     unchanged.
+
+3.3. Console Line Editing for Completion
+
+  When a completion is displayed, the partial text is erased
+  from the console and replaced with the full filename:
+
+  1. Send backspace (08H), space (20H), backspace (08H) for
+     each character of the currently displayed filename or
+     partial text to erase it visually.
+  2. Print the new completed filename.
+  3. The cursor is positioned after the completed filename,
+     ready for the user to press RETURN to accept or TAB
+     to cycle.
+
+3.4. Completion with User/Drive Prefix
+
+  The user area and drive prefix are NOT erased during TAB
+  cycling — only the filename.ext portion is replaced.
+
+    Source: [2]B:ASM.COM     (TAB)
+    Source: [2]B:ASSIGN.COM  (TAB)
+    Source: [2]B:ASM.COM     (wraps around)
+
+3.5. Wildcards and Completion
+
+  TAB completion and wildcards are complementary:
+  - The user may type a partial name, TAB to complete it,
+    then manually edit to add wildcards before pressing
+    RETURN.
+  - TAB does not expand wildcards — it searches the directory
+    for matching names.
+  - If the user has already typed a wildcard character (* or
+    ?) in the partial input, TAB is ignored (bell sounds).
+
+3.6. Implementation Notes
+
+  - The completion match list is rebuilt on each first TAB
+    press after typing. Subsequent TABs cycle through the
+    cached list.
+  - The match list is stored in a small buffer. If more than
+    64 filenames match, only the first 64 are available for
+    cycling.
+  - Pressing any character other than TAB after a completion
+    clears the match list. The next TAB will rebuild it.
+  - BDOS function 6 (Direct Console I/O) is used for
+    character-by-character input to intercept TAB (09H)
+    before the BDOS line editor processes it.
+  - Restore the original user area and drive after the
+    directory search, before prompting for more input.
+
+
+4. HELP SCREEN
+----------------------------------------------------------------
+
+Running SCOPY /? displays the help screen. Running SCOPY with
+no arguments enters interactive mode with TAB completion
+(see section 3).
+
+  SCOPY v1.0 - Smart Copy for CP/M 2.2
+
+  Usage: SCOPY source destination [/options]
+         SCOPY [/options]  (interactive with TAB completion)
+
+  File spec: [user]drive:filename.ext
+  Wildcards: * and ? supported in source
+  Dest "." means current drive and user
+  TAB completes filenames in interactive mode
+
+  Options:
+    /V  Verify after copy
+    /C  Confirm each file
+    /R  Replace existing without prompt
+    /Q  Quiet mode
+
+  Examples:
+    SCOPY *.COM B:
+    SCOPY [0]A:FILE.TXT [3]B:
+    SCOPY FOO.COM B:BAR.COM
+
+
+5. VALIDATION AND PRE-FLIGHT CHECKS
+----------------------------------------------------------------
+
+All validation occurs BEFORE any file data is copied.
+
+5.1. Command Line Parsing
+
+  - Parse source and destination file specifications.
+  - Validate user numbers are in range 0-15.
+  - Validate drive letters are A-P.
+  - Validate filenames conform to 8.3 format:
+    - Filename: 1-8 characters.
+    - Extension: 0-3 characters (period required if extension
+      is present).
+    - Valid characters: A-Z, 0-9, and the following special
+      characters: ! # $ & ' @ ^ ` { } ~ ( ) - _
+    - Invalid characters: < > . , ; : = ? * [ ] | \
+      (Note: * and ? are valid in source only as wildcards)
+    - Filenames are converted to uppercase.
+  - If wildcards are used in the source and a destination
+    filename is specified (not just drive/user), error:
+    "Rename not allowed with wildcards"
+  - If source and destination resolve to the same drive,
+    user area, AND filename — error:
+    "Cannot copy file to itself"
+
+5.2. Source File Validation
+
+  - Set the source user area via BDOS function 32.
+  - Search for source files using BDOS functions 17/18
+    (Search First / Search Next).
+  - If no files match, error: "No matching files"
+  - Expand wildcard matches into a file list.
+  - Calculate total size of all source files in kilobytes
+    by examining the extent and record count fields of all
+    directory entries for each file.
+
+5.3. Destination Capacity Checks
+
+  - Set the destination user area.
+  - Select the destination drive.
+  - Use BDOS function 46 (Get Disk Free Space) or calculate
+    free space from the allocation vector (BDOS function 27)
+    and the Disk Parameter Block (BDOS function 31).
+  - Check: total source size <= destination free space.
+    If not, error: "Insufficient disk space (need XXK, have XXK)"
+  - Calculate the number of directory extents needed:
+    For each source file, count its extents (not just one
+    entry per file — large files span multiple extents).
+    Compare against free directory entries on the destination.
+    If insufficient, error:
+    "Insufficient directory space (need XX, have XX free)"
+
+5.4. Self-Copy Detection
+
+  For each file in the expanded source list, verify that the
+  fully resolved destination (drive + user + filename) does
+  not match the fully resolved source. This check must account
+  for defaults — if the user omits the drive from the
+  destination, it defaults to the current drive, which may be
+  the same as the source drive.
+
+5.5. Existing File Detection
+
+  For each destination file, check if it already exists:
+  - Default behavior: prompt "Overwrite FILENAME.EXT? (Y/N)"
+  - With /R flag: overwrite without prompting
+  - If user answers N: skip that file and continue with the
+    next file in the wildcard list.
+
+
+6. COPY OPERATION
+----------------------------------------------------------------
+
+6.1. Buffer Strategy
+
+  SCOPY uses all available TPA memory above its own code and
+  data as a file buffer. The buffer extends from the end of
+  the program's data area to the base of the BDOS (address
+  obtained from location 0006H-0007H minus a safety margin).
+
+  For each file:
+    1. Set source user area and drive.
+    2. Open the source file (BDOS function 15).
+    3. Read as many 128-byte records as fit in the buffer
+       (BDOS function 20, sequential read).
+    4. Set destination user area and drive.
+    5. If first pass, create/open destination file
+       (BDOS function 22, Make File / function 15, Open).
+    6. Write buffered records to destination
+       (BDOS function 21, sequential write).
+    7. If source file is not fully read, repeat from step 1
+       (multi-pass for files larger than buffer).
+    8. Close destination file (BDOS function 16).
+    9. Close source file (BDOS function 16).
+
+  If a write error occurs (BDOS returns non-zero from
+  function 21), abort immediately with error:
+  "Write error on FILENAME.EXT — copy aborted"
+
+  If a read error occurs (BDOS returns non-zero and non-EOF
+  from function 20), abort immediately with error:
+  "Read error on FILENAME.EXT — copy aborted"
+
+6.2. File Attributes
+
+  After a successful copy, the destination file should have
+  the same attributes (R/O, SYS, Archive) as the source.
+  Attributes are read from the source directory entry and
+  applied to the destination using BDOS function 30
+  (Set File Attributes).
+
+  If the destination file already exists and is marked R/O:
+  - Default behavior: display "FILENAME.EXT is Read-Only,
+    overwrite? (Y/N)"
+  - With /R flag: temporarily clear R/O, overwrite, then
+    set attributes to match source.
+
+6.3. Verify Pass (/V flag)
+
+  After writing and closing the destination file:
+    1. Reopen both source and destination files.
+    2. Read both files one buffer-load at a time.
+    3. Compare the buffers byte-for-byte.
+    4. If mismatch found, error:
+       "Verify failed on FILENAME.EXT"
+    5. Close both files.
+
+6.4. Confirm Mode (/C flag)
+
+  Before copying each file in a wildcard expansion, prompt:
+    "Copy FILENAME.EXT? (Y/N) "
+  If N, skip the file. If Y, proceed with the copy.
+  The pre-flight space calculation is performed on ALL
+  matching files before any prompts are shown. Files skipped
+  by the user simply result in less space being used.
+
+
+7. DISPLAY OUTPUT
+----------------------------------------------------------------
+
+7.1. Normal Mode
+
+  SCOPY v1.0
+
+  Source: [3]A:*.COM (5 files, 48K)
+  Dest:   [5]B:     (112K free, 38 dir entries free)
+
+  Copying STAT.COM ...OK
+  Copying PIP.COM ...OK
+  Copying DUMP.COM ...OK
+  Copying ASM.COM ...OK
+  Copying LOAD.COM ...OK
+
+  5 file(s) copied, 48K transferred
+
+7.2. With /V Flag
+
+  Copying STAT.COM ...OK, Verified
+  Copying PIP.COM ...OK, Verified
+
+7.3. With /C Flag
+
+  Copy STAT.COM? (Y/N) Y
+  Copying STAT.COM ...OK
+  Copy PIP.COM? (Y/N) N
+  Skipping PIP.COM
+
+7.4. With /Q Flag
+
+  Only the header and summary lines are displayed.
+  Per-file lines are suppressed.
+
+7.5. Error Output
+
+  Errors are displayed on the console and the program
+  terminates with a warm boot (JMP 0000H).
+
+  SCOPY v1.0
+
+  Error: Insufficient disk space (need 96K, have 64K)
+
+
+8. PROGRAM STRUCTURE (8080 ASSEMBLY)
+----------------------------------------------------------------
+
+8.1. Module Layout
+
+  The program should be organized into these logical sections:
+
+  MAIN      — Entry point, parse command line, orchestrate
+  PARSE     — Command line parser, file spec extraction
+  VALID     — Validation routines (filename, self-copy, etc.)
+  DIR       — Directory search, wildcard expansion, file list
+  SPACE     — Free space and directory entry calculations
+  COPY      — File read/write/verify buffer management
+  TABCOMP   — TAB completion line editor, match cycling
+  DISPLAY   — Console output routines, number formatting
+  DATA      — FCBs, buffers, variables, string constants
+
+8.2. Key Data Structures
+
+  Source FCB (36 bytes) — For source file operations
+  Destination FCB (36 bytes) — For destination file operations
+  File List — Table of matched filenames from wildcard search
+    Each entry: 11 bytes (8 filename + 3 extension)
+    Maximum entries: limited by available memory, but a
+    practical limit of 128 files per wildcard is reasonable.
+  Copy Buffer — From end of data area to BDOS base
+  TAB Match List — Up to 64 entries of 11 bytes each (704 bytes)
+    for TAB completion cycling. Stored within the data area.
+  Line Input Buffer — For interactive mode line editing,
+    up to 128 bytes.
+
+8.3. BDOS Functions Used
+
+  0   — System Reset (warm boot on fatal error)
+  1   — Console Input (for Y/N prompts)
+  2   — Console Output (character output)
+  6   — Direct Console I/O (for TAB completion input)
+  9   — Print String (terminated by '$')
+  12  — Return Version Number (verify CP/M 2.2)
+  13  — Reset Disk System
+  14  — Select Disk
+  15  — Open File
+  16  — Close File
+  17  — Search for First
+  18  — Search for Next
+  19  — Delete File (before overwriting)
+  20  — Read Sequential
+  21  — Write Sequential
+  22  — Make File (create new file)
+  25  — Return Current Disk
+  27  — Get Addr(Alloc Vector)
+  31  — Get Addr(Disk Parameter Block)
+  32  — Set/Get User Code
+  35  — Compute File Size (for size calculation)
+
+8.4. Command Line Access
+
+  The CP/M CCP places the command tail (everything after
+  the command name) at address 0080H, with the character
+  count at 0080H and the text starting at 0081H. The tail
+  is uppercase and space-delimited.
+
+8.5. Memory Map
+
+  0000H-0007H   Warm boot vector, IOBYTE, current drive
+  0080H-00FFH   Command tail / default DMA buffer
+  0100H         Program start (ORG 100H)
+  xxxxH         End of program code and data
+  xxxxH         Start of copy buffer
+  xxxxH         BDOS base (from address 0006H-0007H)
+
+
+9. ERROR MESSAGES
+----------------------------------------------------------------
+
+  "Type SCOPY /? for help"
+  "Invalid source file specification"
+  "Invalid destination file specification"
+  "Invalid filename character: x"
+  "Filename too long (8.3 max)"
+  "Invalid user number (0-15)"
+  "Invalid drive letter"
+  "No matching files"
+  "Rename not allowed with wildcards"
+  "Cannot copy file to itself"
+  "Insufficient disk space (need XXK, have XXK)"
+  "Insufficient directory space (need XX, have XX free)"
+  "File is Read-Only: FILENAME.EXT"
+  "Read error on FILENAME.EXT"
+  "Write error on FILENAME.EXT"
+  "Verify failed on FILENAME.EXT"
+  "Cannot create file: FILENAME.EXT"
+  "Cannot open file: FILENAME.EXT"
+
+
+10. LIMITATIONS AND NOTES
+----------------------------------------------------------------
+
+  - Maximum user area: 15 (CP/M 2.2 standard)
+  - Maximum file size: 8MB (65536 x 128-byte records)
+  - Maximum files per wildcard match: 128 (practical limit)
+  - Maximum TAB completion matches: 64 (circular cycling)
+  - Filename matching is case-insensitive (all converted
+    to uppercase per CP/M convention)
+  - Submit files (*.SUB) can be used to script SCOPY
+    commands for batch operations.
+  - SCOPY requires CP/M 2.2 or compatible. It uses BDOS
+    function 32 (user code) which is not available in
+    CP/M 1.4.
+  - Files larger than available TPA memory are handled
+    transparently by the multi-pass buffer strategy.
+  - Drive/user state is restored to the original values
+    before program exit (warm boot handles this, but
+    explicit restore is done for clean operation).
+
+
+11. BUILD PROCEDURE
+----------------------------------------------------------------
+
+  Assemble:   M80 =SCOPY
+              (produces SCOPY.REL)
+  Link:       L80 SCOPY,SCOPY/N/E
+              (produces SCOPY.COM)
+
+
+12. FUTURE CONSIDERATIONS (NOT IN v1.0)
+----------------------------------------------------------------
+
+  These features are explicitly out of scope for v1.0
+  but noted for potential future versions:
+
+  - Date/time stamp preservation (requires CP/M 3.0 or
+    DateStamper)
+  - Archive bit-based incremental copy (/A flag)
+  - Interactive mode for browsing and selecting files
+  - Directory display mode (list matching files without
+    copying)
+
+================================================================
+END OF SPECIFICATION
+================================================================
+

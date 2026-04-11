@@ -1,0 +1,14 @@
+# Build artifacts
+*.REL
+*.COM
+*.PRN
+*.SYM
+
+# User-specific build config
+build-hdd.bat
+
+# External tools
+cpmulator.exe
+
+# CPMulator working files
+*.ERR

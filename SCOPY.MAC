@@ -1,0 +1,2220 @@
+	TITLE	'SCOPY v1.0 - Smart Copy for CP/M 2.2'
+;
+;========================================================
+; SCOPY - Smart Copy Utility for CP/M 2.2
+; Phase 1: Command line parsing, validation, help screen
+; Phase 2: Interactive mode with TAB filename completion
+;
+; Target:    Intel 8080 / CP/M 2.2
+; Assembler: Microsoft M80 Macro Assembler
+; Linker:    Microsoft L80
+;
+; Build:     M80 =SCOPY
+;            L80 SCOPY,SCOPY/N/E
+;========================================================
+;
+;--------------------------------------------------------
+; BDOS Function Codes
+;--------------------------------------------------------
+BOOT	EQU	0		;System reset (warm boot)
+CONIN	EQU	1		;Console input
+CONOUT	EQU	2		;Console output
+DIRCON	EQU	6		;Direct console I/O
+PRINT	EQU	9		;Print string ($-terminated)
+SELDSK	EQU	14		;Select disk
+OPEN	EQU	15		;Open file
+CLOSE	EQU	16		;Close file
+SRCHF	EQU	17		;Search for first
+SRCHN	EQU	18		;Search for next
+DELETE	EQU	19		;Delete file
+READS	EQU	20		;Read sequential
+WRITS	EQU	21		;Write sequential
+MAKE	EQU	22		;Make file
+CURDSK	EQU	25		;Return current disk
+SETDMA	EQU	26		;Set DMA address
+GALLOC	EQU	27		;Get alloc vector addr
+SETATT	EQU	30		;Set file attributes
+GDPB	EQU	31		;Get DPB address
+USRCOD	EQU	32		;Get/set user code
+FILSIZ	EQU	35		;Compute file size
+;
+;--------------------------------------------------------
+; System Addresses and Constants
+;--------------------------------------------------------
+BDOS	EQU	0005H		;BDOS entry point
+TPAB	EQU	0006H		;BDOS base address pointer
+CMDTL	EQU	0080H		;Command tail buffer
+;
+CR	EQU	0DH		;Carriage return
+LF	EQU	0AH		;Line feed
+BEL	EQU	07H		;Bell
+BS	EQU	08H		;Backspace
+SPC	EQU	20H		;Space
+NSPC	EQU	0FFH		;Not-specified sentinel
+MAXLN	EQU	63		;Max interactive line length
+MAXTAB	EQU	64		;Max TAB completion matches
+;
+;========================================================
+	ORG	100H
+;========================================================
+;
+;--------------------------------------------------------
+; MAIN - Program entry point
+;--------------------------------------------------------
+MAIN:
+	LXI	SP,STACK	;Set up local stack
+	CALL	GSTATE		;Save current drive and user
+	CALL	BANNER		;Display version banner
+;
+; Check command tail length
+;
+	LDA	CMDTL		;Get tail length
+	ORA	A
+	JZ	IMOD2		;No args -> interactive both
+;
+; Check for /? help request
+;
+	CALL	CHKHLP
+	JC	HELP		;/? found -> show help
+;
+; Begin parsing command line
+;
+	LXI	H,CMDTL+1	;HL = command tail text
+	LDA	CMDTL
+	MOV	B,A		;B = remaining char count
+;
+	CALL	SKPSPC		;Skip leading spaces
+	ORA	A
+	JZ	IMOD2		;Only spaces -> interactive both
+;
+; Check if first token is a flag (no source)
+;
+	CPI	'/'
+	JNZ	M$SRC		;Not a flag, parse source
+;
+; Flags only on command line -> parse then interactive
+;
+	CALL	PFLAGS
+	JC	ERRFLG
+	JMP	IMOD2		;Interactive for both
+;
+; Parse source file specification
+;
+M$SRC:
+	SHLD	TXTPT		;Save text pointer
+	MOV	A,B
+	STA	TXTCNT		;Save count
+	LXI	H,SUSR		;Target = source storage
+	SHLD	TGTPT
+	CALL	PSPEC
+	JC	ERRSRC
+;
+; Verify source has a filename
+;
+	LXI	H,SFN
+	CALL	CHKFN
+	JC	ERRSRC		;No filename in source
+;
+; Skip spaces between source and dest
+;
+	LHLD	TXTPT		;Restore text pointer
+	LDA	TXTCNT
+	MOV	B,A
+	CALL	SKPSPC
+	ORA	A
+	JZ	IMOD1		;No dest -> interactive for dest
+;
+; Check if next token is a flag (no dest on cmd line)
+;
+	MOV	A,M
+	CPI	'/'
+	JNZ	M$DST		;Not a flag, parse dest
+;
+; Flags after source, no dest -> parse flags then interactive
+;
+	CALL	PFLAGS
+	JC	ERRFLG
+	JMP	IMOD1		;Interactive for dest
+;
+; Parse destination file specification
+;
+M$DST:
+	SHLD	TXTPT
+	MOV	A,B
+	STA	TXTCNT
+	LXI	H,DUSR		;Target = dest storage
+	SHLD	TGTPT
+	CALL	PSPEC
+	JC	ERRDST
+;
+; Parse any remaining option flags
+;
+	LHLD	TXTPT
+	LDA	TXTCNT
+	MOV	B,A
+	CALL	PFLAGS
+	JC	ERRFLG
+;
+; Both source and dest parsed from command line
+;
+	JMP	VALID
+;
+;========================================================
+; IMOD2 - Interactive mode: prompt for both src and dest
+;========================================================
+IMOD2:
+	LXI	D,PRMSRC	;"Source: "
+	CALL	GETLIN
+;
+; Check for empty input
+;
+	LDA	LINLEN
+	ORA	A
+	JZ	IMOD2		;Empty -> reprompt
+;
+; Parse source from LINBUF
+;
+	LXI	H,LINBUF
+	SHLD	TXTPT
+	LDA	LINLEN
+	STA	TXTCNT
+	LXI	H,SUSR
+	SHLD	TGTPT
+	CALL	PSPEC
+	JC	IM2ERR
+;
+; Verify source has a filename
+;
+	LXI	H,SFN
+	CALL	CHKFN
+	JC	IM2ERR
+	JMP	IMOD1		;Now prompt for dest
+;
+IM2ERR:
+	LXI	D,MESRC
+	CALL	PRMSG
+	JMP	IMOD2		;Reprompt
+;
+;========================================================
+; IMOD1 - Interactive mode: prompt for destination
+;========================================================
+IMOD1:
+	LXI	D,PRMDST	;"Dest:   "
+	CALL	GETLIN
+;
+; Check for empty input
+;
+	LDA	LINLEN
+	ORA	A
+	JZ	IMOD1		;Empty -> reprompt
+;
+; Parse dest from LINBUF
+;
+	LXI	H,LINBUF
+	SHLD	TXTPT
+	LDA	LINLEN
+	STA	TXTCNT
+	LXI	H,DUSR
+	SHLD	TGTPT
+	CALL	PSPEC
+	JC	IM1ERR
+	JMP	VALID		;Both parsed, validate
+;
+IM1ERR:
+	LXI	D,MEDST
+	CALL	PRMSG
+	JMP	IMOD1		;Reprompt
+;
+;========================================================
+; VALID - Validate parsed source and destination
+;========================================================
+VALID:
+	CALL	CHKWRN
+	JC	ERRWRN
+	CALL	CHKSLF
+	JC	ERRSLF
+	CALL	VDSTFN
+	JC	ERRCHR
+;
+; Phase 1/2 complete - show what was parsed (debug)
+;
+	CALL	SHOWRS
+	JMP	EXIT
+;
+;========================================================
+; GSTATE - Save current drive and user number
+;========================================================
+GSTATE:
+	MVI	C,CURDSK
+	CALL	BDOS
+	STA	CDRV
+	MVI	C,USRCOD
+	MVI	E,0FFH		;E=FF -> get user
+	CALL	BDOS
+	STA	CUSR
+	RET
+;
+;========================================================
+; BANNER - Display version banner
+;========================================================
+BANNER:
+	LXI	D,MSGBAN
+	JMP	PRMSG
+;
+;========================================================
+; CHKHLP - Scan command tail for /?
+; Returns: Carry set if /? found
+;========================================================
+CHKHLP:
+	LXI	H,CMDTL+1
+	LDA	CMDTL
+	MOV	B,A
+CH1:
+	MOV	A,B
+	ORA	A
+	RZ			;End, not found (carry clear)
+	MOV	A,M
+	INX	H
+	DCR	B
+	CPI	'/'
+	JNZ	CH1
+;
+; Found / - check next char
+;
+	MOV	A,B
+	ORA	A
+	RZ			;/ at end, not /?
+	MOV	A,M
+	CPI	'?'
+	JNZ	CH1		;Not ?, keep scanning
+	STC			;Found /?
+	RET
+;
+;========================================================
+; HELP - Display help screen and exit
+;========================================================
+HELP:
+	LXI	D,MSGHLP
+	CALL	PRMSG
+	JMP	EXIT
+;
+;========================================================
+; GETLIN - Read line with TAB filename completion
+; Uses BDOS function 6 for character-by-character input.
+; Input:  DE = prompt string ($-terminated)
+; Output: LINBUF filled, LINLEN set
+;========================================================
+GETLIN:
+	CALL	PRMSG		;Print prompt
+	XRA	A
+	STA	LINLEN		;Clear line length
+	STA	TABACT		;Clear TAB state
+;
+GL1:
+	MVI	C,DIRCON	;Direct console I/O
+	MVI	E,0FFH		;E=FF -> read character
+	CALL	BDOS
+	ORA	A
+	JZ	GL1		;No char ready, spin
+;
+; Dispatch on character
+;
+	CPI	CR
+	JZ	GLDONE		;Enter -> accept
+	CPI	03H		;CTRL-C
+	JZ	EXIT		;Abort
+	CPI	BS
+	JZ	GLBS		;Backspace
+	CPI	7FH		;DEL key (also backspace)
+	JZ	GLBS
+	CPI	09H		;TAB
+	JZ	GLTAB
+	CPI	SPC
+	JC	GL1		;Ignore other control chars
+;
+; Printable character - check buffer space
+;
+	MOV	B,A		;Save char in B
+	LDA	LINLEN
+	CPI	MAXLN
+	JNC	GLBELL		;Buffer full
+;
+; Store character in LINBUF
+;
+	MOV	E,A		;E = current length
+	MVI	D,0
+	LXI	H,LINBUF
+	DAD	D		;HL = LINBUF + length
+	MOV	A,B		;Restore char
+	CALL	TOUPR		;Convert to uppercase
+	MOV	M,A		;Store in buffer
+;
+; Echo character
+;
+	CALL	COUT
+;
+; Increment length
+;
+	LDA	LINLEN
+	INR	A
+	STA	LINLEN
+;
+; Clear TAB state (new char typed)
+;
+	XRA	A
+	STA	TABACT
+	JMP	GL1
+;
+GLBELL:
+	MVI	A,BEL
+	CALL	COUT
+	JMP	GL1
+;
+GLBS:
+; Backspace - delete last character
+;
+	LDA	LINLEN
+	ORA	A
+	JZ	GL1		;Nothing to delete
+	DCR	A
+	STA	LINLEN
+;
+; Erase from screen
+;
+	MVI	A,1
+	CALL	ERASCR		;Erase 1 char
+;
+; Clear TAB state
+;
+	XRA	A
+	STA	TABACT
+	JMP	GL1
+;
+GLTAB:
+	CALL	TABCMP		;Handle TAB completion
+	JMP	GL1
+;
+GLDONE:
+	CALL	CRLF
+	RET
+;
+;========================================================
+; TABCMP - Handle TAB key for filename completion
+; If first press: search directory, cache matches.
+; If repeat press: cycle to next match.
+;========================================================
+TABCMP:
+	LDA	TABACT
+	ORA	A
+	JNZ	TCNEXT		;Already have matches, cycle
+;
+; First TAB press - parse and search
+;
+	CALL	TPARSE		;Parse LINBUF for TAB context
+;
+; Check if wildcards present in partial
+;
+	LDA	TWILD
+	ORA	A
+	JNZ	TCBELL		;Wildcards -> bell
+;
+; Search directory for matches
+;
+	CALL	TABSRC		;Fill TABMAT, set TABCNT
+;
+	LDA	TABCNT
+	ORA	A
+	JZ	TCBELL		;No matches -> bell
+;
+; Initialize cycling state
+;
+	XRA	A
+	STA	TABIDX		;Start at first match
+	MVI	A,1
+	STA	TABACT		;TAB state active
+;
+; Erase partial filename from screen
+;
+	LDA	LINLEN
+	MOV	B,A
+	LDA	PFXLEN
+	MOV	C,A
+	MOV	A,B
+	SUB	C		;A = chars to erase
+	CALL	ERASCR
+;
+; Show first match
+;
+	JMP	TCSHOW
+;
+TCNEXT:
+; Erase current displayed name from screen
+;
+	LDA	LINLEN
+	MOV	B,A
+	LDA	PFXLEN
+	MOV	C,A
+	MOV	A,B
+	SUB	C
+	CALL	ERASCR
+;
+; Advance to next match (circular)
+;
+	LDA	TABIDX
+	INR	A
+	MOV	B,A
+	LDA	TABCNT
+	CMP	B		;TABCNT == new index?
+	JNZ	TCNX1
+	XRA	A		;Wrap to 0
+	JMP	TCNX2
+TCNX1:
+	MOV	A,B
+TCNX2:
+	STA	TABIDX
+;
+TCSHOW:
+; Get pointer to current match in TABMAT
+;
+	LDA	TABIDX
+	CALL	MUL11		;HL = TABIDX * 11
+	LXI	D,TABMAT
+	DAD	D		;HL = match entry address
+;
+; Format 11-byte name as NAME.EXT into FMTBUF
+;
+	LXI	D,FMTBUF
+	CALL	FMTFN		;A = formatted length
+	STA	FMTLEN
+;
+; Update LINBUF: replace text after prefix
+;
+	LDA	PFXLEN
+	MOV	C,A
+	MVI	B,0
+	LXI	H,LINBUF
+	DAD	B		;HL = LINBUF + prefix length
+	LXI	D,FMTBUF
+	LDA	FMTLEN
+	MOV	B,A
+TCCPY:
+	LDAX	D
+	MOV	M,A
+	INX	H
+	INX	D
+	DCR	B
+	JNZ	TCCPY
+;
+; Update LINLEN = PFXLEN + FMTLEN
+;
+	LDA	PFXLEN
+	MOV	B,A
+	LDA	FMTLEN
+	ADD	B
+	STA	LINLEN
+;
+; Print formatted name to console
+;
+	LXI	H,FMTBUF
+	LDA	FMTLEN
+	MOV	B,A
+TCPRN:
+	MOV	A,M
+	CALL	COUT
+	INX	H
+	DCR	B
+	JNZ	TCPRN
+	RET
+;
+TCBELL:
+	MVI	A,BEL
+	CALL	COUT
+	RET
+;
+;========================================================
+; TPARSE - Parse LINBUF for TAB completion context
+; Extracts user area, drive, and partial filename.
+; Builds search FCB in TABFCB.
+; Sets: PFXLEN, TABUSR, TABDRV, TWILD, TABFCB
+;========================================================
+TPARSE:
+;
+; Initialize
+;
+	XRA	A
+	STA	TWILD
+	MVI	A,NSPC
+	STA	TABUSR
+	STA	TABDRV
+;
+; Initialize TABFCB: drive=0, name=all '?'
+;
+	XRA	A
+	STA	TABFCB		;Drive = default
+	LXI	H,TABFCB+1
+	MVI	B,11
+	MVI	A,'?'
+TPIN:
+	MOV	M,A
+	INX	H
+	DCR	B
+	JNZ	TPIN
+;
+; Clear rest of TABFCB (bytes 12-35)
+;
+	MVI	B,24
+	XRA	A
+TPIN2:
+	MOV	M,A
+	INX	H
+	DCR	B
+	JNZ	TPIN2
+;
+; Check for empty buffer
+;
+	LDA	LINLEN
+	ORA	A
+	JZ	TP$PFX		;Empty, search all
+;
+	LXI	H,LINBUF
+	MOV	B,A		;B = remaining count
+;
+; Check for [user] prefix
+;
+	MOV	A,M
+	CPI	'['
+	JNZ	TP$DRV
+;
+	INX	H
+	DCR	B
+	JZ	TP$NP		;[ at end
+;
+; Parse user number
+;
+	CALL	PDEC
+	JC	TP$NP		;Not a digit
+	CPI	16
+	JNC	TP$NP		;> 15
+	STA	TABUSR
+;
+; Expect ]
+;
+	MOV	A,B
+	ORA	A
+	JZ	TP$DRV		;End after number
+	MOV	A,M
+	CPI	']'
+	JNZ	TP$NP		;No ] found
+	INX	H
+	DCR	B
+;
+; Check for drive: prefix
+;
+TP$DRV:
+	MOV	A,B
+	CPI	2
+	JC	TP$PFX		;Less than 2 chars
+;
+; Peek at char+1 for ':'
+;
+	PUSH	H
+	INX	H
+	MOV	A,M
+	POP	H
+	CPI	':'
+	JNZ	TP$PFX		;Not drive:
+;
+; Parse drive letter
+;
+	MOV	A,M
+	CALL	TOUPR
+	SUI	'A'
+	JC	TP$PFX		;Below A
+	CPI	16
+	JNC	TP$PFX		;Above P
+	STA	TABDRV
+;
+; Set FCB drive byte (1=A, 2=B, etc.)
+;
+	INR	A
+	STA	TABFCB
+;
+	INX	H		;Skip drive letter
+	INX	H		;Skip colon
+	DCR	B
+	DCR	B
+	JMP	TP$PFX
+;
+TP$NP:
+; No valid prefix - reset to start of buffer
+;
+	LXI	H,LINBUF
+	LDA	LINLEN
+	MOV	B,A
+;
+TP$PFX:
+; Calculate prefix length = LINLEN - B
+;
+	LDA	LINLEN
+	SUB	B
+	STA	PFXLEN
+;
+; Build search FCB from partial filename
+; HL = partial text, B = remaining count
+;
+	MOV	A,B
+	ORA	A
+	RZ			;No partial, FCB stays all '?'
+;
+	LXI	D,TABFCB+1	;DE = FCB filename area
+	MVI	C,8		;Max 8 filename chars
+;
+TP$FN:
+	MOV	A,B
+	ORA	A
+	RZ			;End of input
+	MOV	A,M
+	CPI	'.'
+	JZ	TP$EXT		;Start of extension
+	CPI	'*'
+	JZ	TP$WLD
+	CPI	'?'
+	JZ	TP$WLD
+;
+	CALL	TOUPR
+	STAX	D
+	INX	H
+	INX	D
+	DCR	B
+	DCR	C
+	JNZ	TP$FN
+;
+; Check for dot after 8 chars
+;
+	MOV	A,B
+	ORA	A
+	RZ
+	MOV	A,M
+	CPI	'.'
+	JZ	TP$EXT
+	RET
+;
+TP$EXT:
+; Parse extension after dot
+;
+	INX	H		;Skip dot
+	DCR	B
+	LXI	D,TABFCB+9	;FCB extension area
+	MVI	C,3
+;
+TP$EX1:
+	MOV	A,B
+	ORA	A
+	RZ
+	MOV	A,M
+	CPI	'*'
+	JZ	TP$WLD
+	CPI	'?'
+	JZ	TP$WLD
+;
+	CALL	TOUPR
+	STAX	D
+	INX	H
+	INX	D
+	DCR	B
+	DCR	C
+	JNZ	TP$EX1
+	RET
+;
+TP$WLD:
+; Wildcard found in partial
+;
+	MVI	A,1
+	STA	TWILD
+	RET
+;
+;========================================================
+; TABSRC - Search directory for TAB completion matches
+; Uses TABFCB as search pattern. Respects TABUSR/TABDRV.
+; Fills TABMAT with unique matching filenames.
+; Sets TABCNT = number of matches found.
+;========================================================
+TABSRC:
+	XRA	A
+	STA	TABCNT
+;
+; Set search user area
+;
+	LDA	TABUSR
+	CPI	NSPC
+	JZ	TS1		;Use current user
+	MVI	C,USRCOD
+	MOV	E,A
+	CALL	BDOS
+TS1:
+;
+; Set search drive
+;
+	LDA	TABDRV
+	CPI	NSPC
+	JZ	TS2		;Use current drive
+	MVI	C,SELDSK
+	MOV	E,A
+	CALL	BDOS
+TS2:
+;
+; Set DMA to our search buffer
+;
+	LXI	D,DMABUF
+	MVI	C,SETDMA
+	CALL	BDOS
+;
+; Search first
+;
+	LXI	D,TABFCB
+	MVI	C,SRCHF
+	CALL	BDOS
+	CPI	0FFH
+	JZ	TSREST		;No matches
+;
+TS3:
+; Compute entry address: DMABUF + A*32
+;
+	ANI	3		;Safety mask
+	MOV	L,A
+	MVI	H,0
+	DAD	H		;*2
+	DAD	H		;*4
+	DAD	H		;*8
+	DAD	H		;*16
+	DAD	H		;*32
+	LXI	D,DMABUF
+	DAD	D		;HL = directory entry
+	INX	H		;Skip user byte (byte 0)
+;
+; Copy 11-byte filename to TMPFN, strip attribute bits
+;
+	LXI	D,TMPFN
+	MVI	B,11
+TS4:
+	MOV	A,M
+	ANI	7FH		;Strip high bit (attributes)
+	STAX	D
+	INX	H
+	INX	D
+	DCR	B
+	JNZ	TS4
+;
+; Check for duplicate (multi-extent files)
+;
+	CALL	ISDUPE
+	JC	TS$NXT		;Duplicate, skip
+;
+; Store in TABMAT at position TABCNT
+;
+	LDA	TABCNT
+	CALL	MUL11		;HL = offset
+	LXI	D,TABMAT
+	DAD	D		;HL = target slot
+	XCHG			;DE = target
+	LXI	H,TMPFN		;HL = source
+	MVI	B,11
+TS5:
+	MOV	A,M
+	STAX	D
+	INX	H
+	INX	D
+	DCR	B
+	JNZ	TS5
+;
+; Increment match count
+;
+	LDA	TABCNT
+	INR	A
+	STA	TABCNT
+	CPI	MAXTAB
+	JZ	TSREST		;Max matches reached
+;
+TS$NXT:
+; Search next
+;
+	LXI	D,TABFCB
+	MVI	C,SRCHN
+	CALL	BDOS
+	CPI	0FFH
+	JNZ	TS3		;More matches
+;
+TSREST:
+; Restore DMA to default
+;
+	LXI	D,CMDTL		;0080H
+	MVI	C,SETDMA
+	CALL	BDOS
+;
+; Restore user area
+;
+	LDA	CUSR
+	MVI	C,USRCOD
+	MOV	E,A
+	CALL	BDOS
+;
+; Restore drive
+;
+	LDA	CDRV
+	MVI	C,SELDSK
+	MOV	E,A
+	CALL	BDOS
+	RET
+;
+;========================================================
+; ISDUPE - Check if TMPFN is already in TABMAT
+; Returns: Carry set if duplicate found
+;========================================================
+ISDUPE:
+	LDA	TABCNT
+	ORA	A
+	RZ			;No entries, not a dupe
+;
+	MOV	B,A		;B = entries to check
+	LXI	H,TABMAT
+ID1:
+	LXI	D,TMPFN
+	MVI	C,11
+ID2:
+	LDAX	D
+	CMP	M
+	JNZ	ID3		;Mismatch
+	INX	H
+	INX	D
+	DCR	C
+	JNZ	ID2
+;
+; All 11 bytes matched - duplicate
+;
+	STC
+	RET
+;
+ID3:
+; Skip remaining bytes of this entry
+;
+	MOV	A,C		;C = bytes remaining
+	ADD	L
+	MOV	L,A
+	JNC	ID4
+	INR	H
+ID4:
+	DCR	B
+	JNZ	ID1
+;
+; Not found
+;
+	ORA	A		;Clear carry
+	RET
+;
+;========================================================
+; FMTFN - Format 11-byte FCB name as NAME.EXT string
+; Input:  HL = 11-byte FCB filename
+;         DE = output buffer
+; Output: A = length of formatted string
+;========================================================
+FMTFN:
+	PUSH	B
+	MVI	C,0		;C = output length
+;
+; Copy filename (up to 8 non-trailing-space chars)
+;
+	MVI	B,8
+FF1:
+	MOV	A,M
+	CPI	SPC
+	JZ	FF2		;Hit trailing space
+	STAX	D
+	INX	H
+	INX	D
+	INR	C
+	DCR	B
+	JNZ	FF1
+	JMP	FF3
+;
+FF2:
+; Skip remaining filename spaces
+;
+FF2A:
+	INX	H
+	DCR	B
+	JNZ	FF2A
+;
+FF3:
+; HL now points to extension area
+; Check if extension has any content
+;
+	PUSH	H
+	MVI	B,3
+FF3A:
+	MOV	A,M
+	CPI	SPC
+	JNZ	FF4		;Has extension
+	INX	H
+	DCR	B
+	JNZ	FF3A
+;
+; No extension
+;
+	POP	H
+	MOV	A,C		;Return length
+	POP	B
+	RET
+;
+FF4:
+; Has extension - add dot and extension chars
+;
+	POP	H		;Restore extension start
+	MVI	A,'.'
+	STAX	D
+	INX	D
+	INR	C
+;
+	MVI	B,3
+FF5:
+	MOV	A,M
+	CPI	SPC
+	JZ	FF6		;Trailing space in extension
+	STAX	D
+	INX	H
+	INX	D
+	INR	C
+	DCR	B
+	JNZ	FF5
+;
+FF6:
+	MOV	A,C		;Return length
+	POP	B
+	RET
+;
+;========================================================
+; ERASCR - Erase A characters from console (backspace)
+; Input: A = number of characters to erase
+;========================================================
+ERASCR:
+	ORA	A
+	RZ			;Nothing to erase
+	MOV	B,A
+ER1:
+	MVI	A,BS
+	CALL	COUT
+	MVI	A,SPC
+	CALL	COUT
+	MVI	A,BS
+	CALL	COUT
+	DCR	B
+	JNZ	ER1
+	RET
+;
+;========================================================
+; MUL11 - Multiply A by 11, result in HL
+; Input:  A = value (0-63)
+; Output: HL = A * 11
+;========================================================
+MUL11:
+	MOV	E,A
+	MVI	D,0		;DE = A
+	MOV	L,A
+	MVI	H,0		;HL = A
+	DAD	H		;HL = 2A
+	DAD	H		;HL = 4A
+	DAD	H		;HL = 8A
+	DAD	D		;HL = 9A
+	DAD	D		;HL = 10A
+	DAD	D		;HL = 11A
+	RET
+;
+;========================================================
+; SKPSPC - Skip spaces in command tail
+; Input:  HL = current pos, B = remaining count
+; Output: HL/B updated past spaces
+;         A = next char, or 0 if exhausted
+;========================================================
+SKPSPC:
+	MOV	A,B
+	ORA	A
+	RZ			;Exhausted, A=0
+SK1:
+	MOV	A,M
+	CPI	SPC
+	RNZ			;Non-space found
+	INX	H
+	DCR	B
+	JNZ	SK1
+	XRA	A		;Exhausted
+	RET
+;
+;========================================================
+; PSPEC - Parse file specification
+;
+; Parses: [user]drive:filename.ext
+; Also handles "." for current drive/user.
+;
+; Uses memory variables:
+;   TXTPT  = text pointer (updated on return)
+;   TXTCNT = remaining char count (updated on return)
+;   TGTPT  = pointer to 13-byte storage block:
+;            byte 0    = user number (NSPC = current)
+;            byte 1    = drive number (NSPC = current)
+;            bytes 2-12 = 11-byte FCB filename
+;
+; Returns: Carry set on parse error
+;========================================================
+PSPEC:
+;
+; Load pointers from memory
+;
+	LHLD	TXTPT
+	LDA	TXTCNT
+	MOV	B,A		;B = remaining count
+;
+; Initialize target: user=NSPC, drive=NSPC, fn=spaces
+;
+	PUSH	H
+	PUSH	B
+	LHLD	TGTPT
+	MVI	M,NSPC		;User
+	INX	H
+	MVI	M,NSPC		;Drive
+	INX	H
+	MVI	B,11
+	MVI	A,SPC
+PSIN:
+	MOV	M,A
+	INX	H
+	DCR	B
+	JNZ	PSIN
+	POP	B
+	POP	H
+;
+; Anything to parse?
+;
+	MOV	A,B
+	ORA	A
+	JZ	PSERR
+;
+; Check for "." (current drive/user shorthand)
+;
+	MOV	A,M
+	CPI	'.'
+	JNZ	PS$USR
+;
+; Verify "." is standalone (next is space, /, or end)
+;
+	MOV	A,B
+	CPI	1
+	JZ	PS$DOT		;At end
+	PUSH	H
+	INX	H
+	MOV	A,M
+	POP	H
+	CPI	SPC
+	JZ	PS$DOT
+	CPI	'/'
+	JZ	PS$DOT
+	JMP	PS$USR		;Not standalone, parse normally
+;
+PS$DOT:
+	INX	H		;Consume "."
+	DCR	B
+	JMP	PSOK
+;
+; Check for [user] prefix
+;
+PS$USR:
+	MOV	A,M
+	CPI	'['
+	JNZ	PS$DRV		;No user prefix
+	INX	H
+	DCR	B
+	JZ	PSERR		;[ at end
+;
+; Parse 1-2 digit decimal user number
+;
+	CALL	PDEC
+	JC	PSERR		;Bad number
+	CPI	16
+	JNC	PSERR		;>15
+;
+; Store user number at TGTPT+0
+;
+	PUSH	H
+	LHLD	TGTPT
+	MOV	M,A
+	POP	H
+;
+; Expect closing ]
+;
+	MOV	A,B
+	ORA	A
+	JZ	PSERR		;Missing ]
+	MOV	A,M
+	CPI	']'
+	JNZ	PSERR
+	INX	H
+	DCR	B
+;
+; Check for drive: prefix
+;
+PS$DRV:
+	MOV	A,B
+	ORA	A
+	JZ	PSOK		;Nothing left
+	CPI	1
+	JZ	PS$FN		;Only 1 char, can't be drive:
+;
+; Peek at next char for ':'
+;
+	PUSH	H
+	INX	H
+	MOV	A,M
+	POP	H
+	CPI	':'
+	JNZ	PS$FN		;Not drive:
+;
+; Parse drive letter
+;
+	MOV	A,M
+	CALL	TOUPR
+	SUI	'A'
+	JC	PSERR		;Below A
+	CPI	16
+	JNC	PSERR		;Above P
+;
+; Store drive number at TGTPT+1
+;
+	PUSH	H
+	LHLD	TGTPT
+	INX	H		;Point to drive byte
+	MOV	M,A
+	POP	H
+;
+	INX	H		;Skip drive letter
+	INX	H		;Skip colon
+	DCR	B
+	DCR	B
+;
+; Parse filename (up to 8 chars)
+;
+PS$FN:
+	MOV	A,B
+	ORA	A
+	JZ	PSOK		;Nothing left (drive/user only)
+;
+; Get pointer to filename area (TGTPT+2)
+;
+	PUSH	H		;Save text pointer
+	LHLD	TGTPT
+	INX	H
+	INX	H		;HL = filename area
+	SHLD	FNPTR		;Save for extension parsing
+	POP	H		;Restore text pointer
+;
+	MVI	C,8		;Max 8 filename chars
+PS$FN1:
+	MOV	A,B
+	ORA	A
+	JZ	PSOK		;End of tail
+	MOV	A,M
+	CPI	SPC
+	JZ	PSOK		;Space = end of spec
+	CPI	'/'
+	JZ	PSOK		;Flag delimiter
+	CPI	'.'
+	JZ	PS$EXT		;Start of extension
+	CPI	'*'
+	JZ	PS$FNW		;Wildcard
+;
+; Store filename character
+;
+	CALL	TOUPR
+	PUSH	H
+	PUSH	D
+	LHLD	FNPTR
+	MOV	M,A
+	INX	H
+	SHLD	FNPTR
+	POP	D
+	POP	H
+;
+	INX	H		;Next input char
+	DCR	B
+	DCR	C
+	JNZ	PS$FN1
+;
+; Used 8 chars - must hit '.', space, '/', or end
+;
+	MOV	A,B
+	ORA	A
+	JZ	PSOK
+	MOV	A,M
+	CPI	'.'
+	JZ	PS$EXT
+	CPI	SPC
+	JZ	PSOK
+	CPI	'/'
+	JZ	PSOK
+	JMP	PSERR		;Filename too long
+;
+; Wildcard * in filename: fill rest with '?'
+;
+PS$FNW:
+	PUSH	H
+	PUSH	D
+	LHLD	FNPTR
+PSFNW1:
+	MOV	A,C
+	ORA	A
+	JZ	PSFNW2
+	MVI	M,'?'
+	INX	H
+	DCR	C
+	JMP	PSFNW1
+PSFNW2:
+	SHLD	FNPTR		;Update pointer past filled area
+	POP	D
+	POP	H
+	INX	H		;Skip the *
+	DCR	B
+;
+; After *, check for .ext or end
+;
+	MOV	A,B
+	ORA	A
+	JZ	PSOK
+	MOV	A,M
+	CPI	'.'
+	JZ	PS$EXT
+	CPI	SPC
+	JZ	PSOK
+	CPI	'/'
+	JZ	PSOK
+	JMP	PSOK		;Ignore trailing junk after *
+;
+; Parse extension (after the dot)
+;
+PS$EXT:
+	INX	H		;Skip the dot
+	DCR	B
+;
+; Position FNPTR to extension area (TGTPT+2+8)
+;
+	PUSH	H
+	LHLD	TGTPT
+	LXI	D,10		;Offset 2+8 = 10
+	DAD	D		;HL = extension area
+	SHLD	FNPTR
+	POP	H
+;
+	MVI	C,3		;Max 3 extension chars
+PS$EX1:
+	MOV	A,B
+	ORA	A
+	JZ	PSOK		;End of tail
+	MOV	A,M
+	CPI	SPC
+	JZ	PSOK
+	CPI	'/'
+	JZ	PSOK
+	CPI	'*'
+	JZ	PS$EXW		;Wildcard in extension
+;
+; Store extension character
+;
+	CALL	TOUPR
+	PUSH	H
+	PUSH	D
+	LHLD	FNPTR
+	MOV	M,A
+	INX	H
+	SHLD	FNPTR
+	POP	D
+	POP	H
+;
+	INX	H
+	DCR	B
+	DCR	C
+	JNZ	PS$EX1
+;
+; Used 3 chars - must be at end, space, or flag
+;
+	MOV	A,B
+	ORA	A
+	JZ	PSOK
+	MOV	A,M
+	CPI	SPC
+	JZ	PSOK
+	CPI	'/'
+	JZ	PSOK
+	JMP	PSERR		;Extension too long
+;
+; Wildcard * in extension: fill rest with '?'
+;
+PS$EXW:
+	PUSH	H
+	PUSH	D
+	LHLD	FNPTR
+PSEXW1:
+	MOV	A,C
+	ORA	A
+	JZ	PSEXW2
+	MVI	M,'?'
+	INX	H
+	DCR	C
+	JMP	PSEXW1
+PSEXW2:
+	POP	D
+	POP	H
+	INX	H		;Skip *
+	DCR	B
+	JMP	PSOK
+;
+; Parse success - save updated text position
+;
+PSOK:
+	SHLD	TXTPT
+	MOV	A,B
+	STA	TXTCNT
+	ORA	A		;Clear carry
+	RET
+;
+; Parse error
+;
+PSERR:
+	STC
+	RET
+;
+;========================================================
+; PDEC - Parse 1-2 digit decimal number
+; Input:  HL = text, B = remaining count
+; Output: A = value, HL/B advanced past digits
+;         Carry set if first char is not a digit
+;========================================================
+PDEC:
+	MOV	A,M
+	CPI	'0'
+	JC	PDECE		;Not a digit
+	CPI	'9'+1
+	JNC	PDECE
+	SUI	'0'
+	MOV	C,A		;C = first digit value
+	INX	H
+	DCR	B
+	JZ	PDECD		;End of input, one digit
+;
+; Check for second digit
+;
+	MOV	A,M
+	CPI	'0'
+	JC	PDECD		;Not digit, done
+	CPI	'9'+1
+	JNC	PDECD
+	SUI	'0'
+	MOV	D,A		;D = second digit
+;
+; Compute: C*10 + D
+;
+	MOV	A,C
+	ADD	A		;*2
+	ADD	A		;*4
+	ADD	C		;*5
+	ADD	A		;*10
+	ADD	D		;+ones
+	MOV	C,A
+	INX	H
+	DCR	B
+PDECD:
+	MOV	A,C		;Return value in A
+	ORA	A		;Clear carry
+	RET
+PDECE:
+	STC
+	RET
+;
+;========================================================
+; TOUPR - Convert character to uppercase
+; Input/Output: A = character
+;========================================================
+TOUPR:
+	CPI	'a'
+	RC
+	CPI	'z'+1
+	RNC
+	SUI	20H
+	RET
+;
+;========================================================
+; CHKFN - Check if 11-byte filename has any content
+; Input:  HL = pointer to 11-byte filename
+; Output: Carry set if all spaces (no filename)
+;========================================================
+CHKFN:
+	MVI	C,11
+CHKF1:
+	MOV	A,M
+	CPI	SPC
+	JNZ	CHKF2		;Found non-space
+	INX	H
+	DCR	C
+	JNZ	CHKF1
+	STC			;All spaces
+	RET
+CHKF2:
+	ORA	A		;Clear carry
+	RET
+;
+;========================================================
+; PFLAGS - Parse option flags from remainder of line
+; Input:  HL = current pos, B = remaining count
+; Output: Flag bytes set (FVERFY, FCONFM, FREPL, FQUIET)
+;         Carry set on unknown flag
+;========================================================
+PFLAGS:
+	CALL	SKPSPC
+	MOV	A,B
+	ORA	A
+	RZ			;Nothing left
+PF1:
+	MOV	A,B
+	ORA	A
+	RZ			;Done
+	MOV	A,M
+	CPI	'/'
+	JNZ	PFERR		;Expected / or end
+	INX	H
+	DCR	B
+	JZ	PFERR		;/ at end
+;
+; Read flag characters until space or end
+;
+PF2:
+	MOV	A,B
+	ORA	A
+	RZ			;Done
+	MOV	A,M
+	CPI	SPC
+	JZ	PF3		;Space between flag groups
+	CALL	TOUPR
+	CPI	'V'
+	JZ	PFV
+	CPI	'C'
+	JZ	PFC
+	CPI	'R'
+	JZ	PFR
+	CPI	'Q'
+	JZ	PFQ
+	JMP	PFERR		;Unknown flag
+PFV:
+	MVI	A,1
+	STA	FVERFY
+	JMP	PF4
+PFC:
+	MVI	A,1
+	STA	FCONFM
+	JMP	PF4
+PFR:
+	MVI	A,1
+	STA	FREPL
+	JMP	PF4
+PFQ:
+	MVI	A,1
+	STA	FQUIET
+PF4:
+	INX	H
+	DCR	B
+	JMP	PF2
+PF3:
+	CALL	SKPSPC
+	MOV	A,B
+	ORA	A
+	RZ
+	JMP	PF1		;Next flag group
+PFERR:
+	STC
+	RET
+;
+;========================================================
+; CHKWRN - Check: wildcards in source + dest rename
+; If source has wildcards and dest has a filename,
+; that's an error (rename not allowed with wildcards).
+; Output: Carry set if invalid combination
+;========================================================
+CHKWRN:
+;
+; Check if source has any '?' (wildcard indicator)
+;
+	LXI	H,SFN
+	MVI	C,11
+CW1:
+	MOV	A,M
+	CPI	'?'
+	JZ	CW2		;Source has wildcards
+	INX	H
+	DCR	C
+	JNZ	CW1
+	ORA	A		;No wildcards, ok
+	RET
+CW2:
+;
+; Source has wildcards - check if dest has a filename
+;
+	LXI	H,DFN
+	MVI	C,11
+CW3:
+	MOV	A,M
+	CPI	SPC
+	JNZ	CW4		;Dest has filename = error
+	INX	H
+	DCR	C
+	JNZ	CW3
+	ORA	A		;Dest blank, ok
+	RET
+CW4:
+	STC			;Wildcards + rename
+	RET
+;
+;========================================================
+; CHKSLF - Check: not copying file to itself
+; Resolves defaults and compares drive, user, filename.
+; Output: Carry set if source == dest
+;========================================================
+CHKSLF:
+;
+; Resolve source drive
+;
+	LDA	SDRV
+	CPI	NSPC
+	JNZ	CS1
+	LDA	CDRV
+CS1:
+	STA	RSDRV		;Resolved source drive
+;
+; Resolve dest drive
+;
+	LDA	DDRV
+	CPI	NSPC
+	JNZ	CS2
+	LDA	CDRV
+CS2:
+	MOV	B,A		;B = resolved dest drive
+	LDA	RSDRV
+	CMP	B
+	JNZ	CSOK		;Different drives, ok
+;
+; Same drive - resolve users
+;
+	LDA	SUSR
+	CPI	NSPC
+	JNZ	CS3
+	LDA	CUSR
+CS3:
+	STA	RSUSR		;Resolved source user
+	LDA	DUSR
+	CPI	NSPC
+	JNZ	CS4
+	LDA	CUSR
+CS4:
+	MOV	B,A		;B = resolved dest user
+	LDA	RSUSR
+	CMP	B
+	JNZ	CSOK		;Different users, ok
+;
+; Same drive and user - compare filenames
+; If dest filename is all spaces, it inherits the source
+; name, which means self-copy.
+;
+	LXI	H,DFN
+	MVI	C,11
+	MVI	D,1		;D=1 if all spaces so far
+CS5:
+	MOV	A,M
+	CPI	SPC
+	JZ	CS5A
+	MVI	D,0
+CS5A:
+	INX	H
+	DCR	C
+	JNZ	CS5
+;
+	MOV	A,D
+	ORA	A
+	JNZ	CS6		;All spaces = inherits name = self
+;
+; Dest has explicit name - compare byte by byte
+;
+	LXI	H,SFN
+	LXI	D,DFN
+	MVI	C,11
+CS5B:
+	LDAX	D
+	CMP	M
+	JNZ	CSOK		;Names differ, ok
+	INX	H
+	INX	D
+	DCR	C
+	JNZ	CS5B
+CS6:
+	STC			;Same file
+	RET
+CSOK:
+	ORA	A		;Clear carry = not self-copy
+	RET
+;
+;========================================================
+; VDSTFN - Validate destination filename characters
+; Wildcards and invalid CP/M chars are rejected.
+; Output: Carry set if invalid char found
+;         BADCHR = the offending character
+;========================================================
+VDSTFN:
+;
+; If dest filename is all spaces, nothing to validate
+;
+	LXI	H,DFN
+	CALL	CHKFN
+	JC	VDOK		;All spaces = valid (no rename)
+;
+	LXI	H,DFN
+	MVI	C,11
+VD1:
+	MOV	A,M
+	CPI	SPC
+	JZ	VD2		;Space is ok
+	CPI	'?'
+	JZ	VDERR
+	CPI	'*'
+	JZ	VDERR
+	CPI	'<'
+	JZ	VDERR
+	CPI	'>'
+	JZ	VDERR
+	CPI	','
+	JZ	VDERR
+	CPI	';'
+	JZ	VDERR
+	CPI	':'
+	JZ	VDERR
+	CPI	'='
+	JZ	VDERR
+	CPI	'['
+	JZ	VDERR
+	CPI	']'
+	JZ	VDERR
+	CPI	'|'
+	JZ	VDERR
+	CPI	'\'
+	JZ	VDERR
+	CPI	'!'		;Below '!' is control char
+	JC	VDERR
+	CPI	7FH		;DEL and above
+	JNC	VDERR
+VD2:
+	INX	H
+	DCR	C
+	JNZ	VD1
+VDOK:
+	ORA	A		;Clear carry = valid
+	RET
+VDERR:
+	STA	BADCHR
+	STC
+	RET
+;
+;========================================================
+; SHOWRS - Display parsed results (Phase 1 debug output)
+;========================================================
+SHOWRS:
+	CALL	CRLF
+;
+; Show source
+;
+	LXI	D,MSGSRC
+	CALL	PRMSG
+	LDA	SUSR
+	CALL	SHUSR
+	LDA	SDRV
+	CALL	SHDRV
+	LXI	H,SFN
+	CALL	SHFN
+	CALL	CRLF
+;
+; Show destination
+;
+	LXI	D,MSGDST
+	CALL	PRMSG
+	LDA	DUSR
+	CALL	SHUSR
+	LDA	DDRV
+	CALL	SHDRV
+	LXI	H,DFN
+	CALL	SHFN
+	CALL	CRLF
+;
+; Show flags if any are set
+;
+	LDA	FVERFY
+	LXI	H,FCONFM
+	ORA	M
+	LXI	H,FREPL
+	ORA	M
+	LXI	H,FQUIET
+	ORA	M
+	RZ			;No flags set
+;
+	LXI	D,MSGFLG
+	CALL	PRMSG
+	LDA	FVERFY
+	ORA	A
+	CNZ	SHV
+	LDA	FCONFM
+	ORA	A
+	CNZ	SHC
+	LDA	FREPL
+	ORA	A
+	CNZ	SHR
+	LDA	FQUIET
+	ORA	A
+	CNZ	SHQ
+	JMP	CRLF
+;
+SHV:
+	MVI	A,'V'
+	JMP	COUT
+SHC:
+	MVI	A,'C'
+	JMP	COUT
+SHR:
+	MVI	A,'R'
+	JMP	COUT
+SHQ:
+	MVI	A,'Q'
+	JMP	COUT
+;
+;========================================================
+; SHUSR - Display user number
+; Input: A = user (NSPC = use current)
+;========================================================
+SHUSR:
+	PUSH	PSW
+	MVI	A,'['
+	CALL	COUT
+	POP	PSW
+	CPI	NSPC
+	JNZ	SHU1
+	LDA	CUSR		;Show current if not specified
+SHU1:
+	CALL	DECOUT
+	MVI	A,']'
+	JMP	COUT
+;
+;========================================================
+; SHDRV - Display drive letter
+; Input: A = drive (NSPC = use current)
+;========================================================
+SHDRV:
+	CPI	NSPC
+	JNZ	SHD1
+	LDA	CDRV
+SHD1:
+	ADI	'A'
+	CALL	COUT
+	MVI	A,':'
+	JMP	COUT
+;
+;========================================================
+; SHFN - Display filename.ext from 11-byte FCB name
+; Input: HL = pointer to 11-byte name
+; Trims trailing spaces, shows as NAME.EXT
+;========================================================
+SHFN:
+;
+; Check if all spaces (no filename to show)
+;
+	PUSH	H
+	CALL	CHKFN
+	POP	H
+	RC			;All spaces, nothing to show
+;
+; Find end of filename (last non-space in first 8 bytes)
+;
+	PUSH	H		;Save start
+	MVI	C,8
+	MVI	D,0		;D = count of chars to print
+SF1:
+	MOV	A,M
+	CPI	SPC
+	JZ	SF1A
+	MOV	D,C		;Update: print at least this many
+SF1A:
+	INX	H
+	DCR	C
+	JNZ	SF1
+;
+; D holds countdown at last non-space
+; Chars to print = 8 - D + 1 = 9 - D
+;
+	POP	H		;Restore start
+	MVI	A,9
+	SUB	D
+	MOV	C,A		;C = filename chars to print
+	ORA	A
+	JZ	SF3		;No filename chars
+SF2:
+	MOV	A,M
+	CALL	COUT
+	INX	H
+	DCR	C
+	JNZ	SF2
+;
+; Advance HL to extension (byte 8)
+;
+	MOV	A,D
+	DCR	A
+	JM	SF3		;Already at byte 8
+SF2A:
+	ORA	A
+	JZ	SF3
+	INX	H
+	DCR	A
+	JMP	SF2A
+;
+; Check if extension has content
+;
+SF3:
+	PUSH	H		;Save extension start
+	MVI	C,3
+SF3A:
+	MOV	A,M
+	CPI	SPC
+	JNZ	SF4		;Has extension
+	INX	H
+	DCR	C
+	JNZ	SF3A
+	POP	H		;No extension
+	ORA	A		;Clear carry
+	RET
+;
+SF4:
+	POP	H		;Restore extension start
+	MVI	A,'.'
+	CALL	COUT
+;
+; Find end of extension (last non-space in 3 bytes)
+;
+	PUSH	H
+	MVI	C,3
+	MVI	D,0
+SF4A:
+	MOV	A,M
+	CPI	SPC
+	JZ	SF4B
+	MOV	D,C
+SF4B:
+	INX	H
+	DCR	C
+	JNZ	SF4A
+;
+	POP	H
+	MVI	A,4
+	SUB	D
+	MOV	C,A		;Chars to print
+SF4C:
+	MOV	A,M
+	CALL	COUT
+	INX	H
+	DCR	C
+	JNZ	SF4C
+	RET
+;
+;========================================================
+; DECOUT - Print A register as decimal (0-255)
+; Suppresses leading zeros.
+;========================================================
+DECOUT:
+	PUSH	B
+	PUSH	D
+	MVI	D,0		;Leading zero flag
+	PUSH	PSW
+	MVI	E,100		;Hundreds
+	CALL	DDIG
+	POP	PSW
+	PUSH	PSW
+	MVI	E,10		;Tens
+	CALL	DDIG
+	POP	PSW
+	ADI	'0'		;Ones - always print
+	CALL	COUT
+	POP	D
+	POP	B
+	RET
+;
+; DDIG - Extract and print one decimal digit
+; Input:  A = value, E = divisor, D = suppress flag
+; Output: A = remainder, D updated
+;
+DDIG:
+	MVI	C,0		;Digit counter
+DD1:
+	SUB	E
+	JC	DD2
+	INR	C
+	JMP	DD1
+DD2:
+	ADD	E		;Restore (went one past)
+	PUSH	PSW		;Save remainder
+	MOV	A,C
+	ORA	A
+	JNZ	DD3		;Non-zero digit
+	MOV	A,D
+	ORA	A
+	JZ	DD4		;Leading zero, suppress
+DD3:
+	MVI	D,1		;No more suppression
+	MOV	A,C
+	ADI	'0'
+	CALL	COUT
+DD4:
+	POP	PSW		;Restore remainder
+	RET
+;
+;========================================================
+; COUT - Output character in A to console
+;========================================================
+COUT:
+	PUSH	H
+	PUSH	D
+	PUSH	B
+	PUSH	PSW
+	MOV	E,A
+	MVI	C,CONOUT
+	CALL	BDOS
+	POP	PSW
+	POP	B
+	POP	D
+	POP	H
+	RET
+;
+;========================================================
+; CRLF - Output carriage return / line feed
+;========================================================
+CRLF:
+	MVI	A,CR
+	CALL	COUT
+	MVI	A,LF
+	JMP	COUT
+;
+;========================================================
+; PRMSG - Print $-terminated string at DE
+;========================================================
+PRMSG:
+	PUSH	H
+	PUSH	B
+	MVI	C,PRINT
+	CALL	BDOS
+	POP	B
+	POP	H
+	RET
+;
+;========================================================
+; Error Handlers
+;========================================================
+ERRSRC:
+	LXI	D,MESRC
+	JMP	ERROR
+ERRDST:
+	LXI	D,MEDST
+	JMP	ERROR
+ERRFLG:
+	LXI	D,MEFLG
+	JMP	ERROR
+ERRWRN:
+	LXI	D,MEWRN
+	JMP	ERROR
+ERRSLF:
+	LXI	D,MESLF
+	JMP	ERROR
+ERRCHR:
+	LXI	D,MECHR
+	CALL	PRMSG
+	LDA	BADCHR
+	CALL	COUT
+	CALL	CRLF
+	JMP	EXIT
+;
+ERROR:
+	CALL	PRMSG
+	CALL	CRLF
+;
+;========================================================
+; EXIT - Exit program via warm boot
+;========================================================
+EXIT:
+	JMP	BOOT
+;
+;========================================================
+; Message Strings
+;========================================================
+;
+MSGBAN:
+	DB	CR,LF
+	DB	'SCOPY v1.0 - Smart Copy for CP/M 2.2'
+	DB	' [Build 3]'
+	DB	CR,LF,'$'
+;
+MSGHLP:
+	DB	CR,LF
+	DB	'Usage: SCOPY source destination [/options]'
+	DB	CR,LF
+	DB	'       SCOPY [/options]  (interactive with'
+	DB	' TAB completion)'
+	DB	CR,LF,CR,LF
+	DB	'File spec: [user]drive:filename.ext'
+	DB	CR,LF
+	DB	'Wildcards: * and ? supported in source'
+	DB	CR,LF
+	DB	'Dest "." means current drive and user'
+	DB	CR,LF
+	DB	'TAB completes filenames in interactive'
+	DB	' mode'
+	DB	CR,LF,CR,LF
+	DB	'Options:'
+	DB	CR,LF
+	DB	'  /V  Verify after copy'
+	DB	CR,LF
+	DB	'  /C  Confirm each file'
+	DB	CR,LF
+	DB	'  /R  Replace existing without prompt'
+	DB	CR,LF
+	DB	'  /Q  Quiet mode'
+	DB	CR,LF,CR,LF
+	DB	'Examples:'
+	DB	CR,LF
+	DB	'  SCOPY *.COM B:'
+	DB	CR,LF
+	DB	'  SCOPY [0]A:FILE.TXT [3]B:'
+	DB	CR,LF
+	DB	'  SCOPY FOO.COM B:BAR.COM'
+	DB	CR,LF,'$'
+;
+; Interactive mode prompts
+;
+PRMSRC:	DB	'Source: $'
+PRMDST:	DB	'Dest:   $'
+;
+; Debug output labels
+;
+MSGSRC:	DB	'Source: $'
+MSGDST:	DB	'Dest:   $'
+MSGFLG:	DB	'Flags:  /$'
+;
+; Error messages
+;
+MESRC:
+	DB	CR,LF
+	DB	'Error: Invalid source file specification'
+	DB	CR,LF,'$'
+MEDST:
+	DB	CR,LF
+	DB	'Error: Invalid destination file'
+	DB	' specification'
+	DB	CR,LF,'$'
+MEFLG:
+	DB	CR,LF
+	DB	'Error: Invalid option flag'
+	DB	CR,LF,'$'
+MEWRN:
+	DB	CR,LF
+	DB	'Error: Rename not allowed with wildcards'
+	DB	CR,LF,'$'
+MESLF:
+	DB	CR,LF
+	DB	'Error: Cannot copy file to itself'
+	DB	CR,LF,'$'
+MECHR:
+	DB	CR,LF
+	DB	'Error: Invalid filename character: $'
+;
+;========================================================
+; Data Area
+;========================================================
+;
+; Current system state (saved at startup)
+;
+CDRV:	DB	0		;Current drive (0=A, 1=B...)
+CUSR:	DB	0		;Current user (0-15)
+;
+; Source file specification
+;
+SUSR:	DB	NSPC		;Source user (FF=current)
+SDRV:	DB	NSPC		;Source drive (FF=current)
+SFN:	DB	'        '	;Filename (8 bytes)
+	DB	'   '		;Extension (3 bytes)
+;
+; Destination file specification
+;
+DUSR:	DB	NSPC		;Dest user (FF=current)
+DDRV:	DB	NSPC		;Dest drive (FF=current)
+DFN:	DB	'        '	;Filename (8 bytes)
+	DB	'   '		;Extension (3 bytes)
+;
+; Option flags (0=off, 1=on)
+;
+FVERFY:	DB	0		;/V verify
+FCONFM:	DB	0		;/C confirm
+FREPL:	DB	0		;/R replace
+FQUIET:	DB	0		;/Q quiet
+;
+; Parser working variables
+;
+TXTPT:	DW	0		;Current text pointer
+TXTCNT:	DB	0		;Remaining char count
+TGTPT:	DW	0		;Target storage pointer
+FNPTR:	DW	0		;Current filename write pos
+;
+; Temp storage
+;
+BADCHR:	DB	0		;Invalid character found
+RSDRV:	DB	0		;Resolved source drive
+RSUSR:	DB	0		;Resolved source user
+;
+; Interactive line editor
+;
+LINBUF:	DS	64		;Line input buffer
+LINLEN:	DB	0		;Current line length
+;
+; TAB completion state
+;
+TABACT:	DB	0		;TAB state active flag
+TABIDX:	DB	0		;Current match index
+TABCNT:	DB	0		;Number of matches found
+PFXLEN:	DB	0		;Length of [user]drive: prefix
+TWILD:	DB	0		;Wildcard found in partial
+TABUSR:	DB	NSPC		;User area for TAB search
+TABDRV:	DB	NSPC		;Drive for TAB search
+FMTLEN:	DB	0		;Formatted name length
+FMTBUF:	DS	13		;Formatted NAME.EXT buffer
+TMPFN:	DS	11		;Temp filename for dup check
+;
+; TAB search FCB (36 bytes)
+;
+TABFCB:	DS	36
+;
+; DMA buffer for directory searches (128 bytes)
+;
+DMABUF:	DS	128
+;
+; TAB match list (64 entries x 11 bytes = 704 bytes)
+;
+TABMAT:	DS	MAXTAB*11
+;
+; Stack (64 levels)
+;
+	DS	128
+STACK	EQU	$
+;
+	END
+
