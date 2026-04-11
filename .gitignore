@@ -2,7 +2,8 @@
 *.REL
 *.PRN
 *.SYM
-SCOPY.COM
+# Build intermediates (not .COM outputs)
+
 
 # User-specific build config
 build-hdd.bat
