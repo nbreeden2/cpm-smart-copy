@@ -501,47 +501,80 @@ TPIN2:
 	JZ	TP$PFX
 	LXI	H,LINBUF
 	MOV	B,A
+; Parse prefix: drive[user]: or user: or drive:
+; Examples: A: B3: C15: 4: 12:
 	MOV	A,M
-	CPI	'['
-	JNZ	TP$DRV
-	INX	H
-	DCR	B
-	JZ	TP$NP
-	CALL	PDEC
-	JC	TP$NP
-	CPI	16
-	JNC	TP$NP
-	STA	TABUSR
-	MOV	A,B
-	ORA	A
-	JZ	TP$DRV
-	MOV	A,M
-	CPI	']'
-	JNZ	TP$NP
-	INX	H
-	DCR	B
-TP$DRV:
+	CALL	TOUPR
+	CPI	'A'
+	JC	TP$NU		;Not a letter, try user#
+	CPI	'P'+1
+	JNC	TP$PFX		;Not A-P, no prefix
+; First char is A-P, could be drive letter
 	MOV	A,B
 	CPI	2
-	JC	TP$PFX
+	JC	TP$PFX		;Only 1 char, no room for ':'
 	PUSH	H
 	INX	H
-	MOV	A,M
+	MOV	A,M		;Peek at 2nd char
 	POP	H
 	CPI	':'
-	JNZ	TP$PFX
+	JZ	TP$DRO		;drive: only
+; 2nd char not ':', check for digit (drive+user)
+	CPI	'0'
+	JC	TP$PFX		;Not digit, no prefix
+	CPI	'9'+1
+	JNC	TP$PFX		;Not digit, no prefix
+; Drive letter + digits: save drive, parse user
 	MOV	A,M
 	CALL	TOUPR
 	SUI	'A'
-	JC	TP$PFX
+	STA	TABDRV
+	INR	A
+	STA	TABFCB
+	INX	H
+	DCR	B
+	CALL	PDEC		;Parse user number
+	JC	TP$NP		;Bad number
 	CPI	16
-	JNC	TP$PFX
+	JNC	TP$NP		;User > 15
+	STA	TABUSR
+	MOV	A,M
+	CPI	':'
+	JNZ	TP$NP		;Must end with ':'
+	INX	H
+	DCR	B
+	JMP	TP$PFX
+TP$DRO:
+; Drive letter only (e.g. A:)
+	MOV	A,M
+	CALL	TOUPR
+	SUI	'A'
 	STA	TABDRV
 	INR	A
 	STA	TABFCB
 	INX	H
 	INX	H
 	DCR	B
+	DCR	B
+	JMP	TP$PFX
+TP$NU:
+; First char not a letter - check for user number
+	CPI	'0'
+	JC	TP$PFX		;Not digit, no prefix
+	CPI	'9'+1
+	JNC	TP$PFX		;Not digit, no prefix
+	CALL	PDEC		;Parse user number
+	JC	TP$NP		;Bad number
+	CPI	16
+	JNC	TP$NP		;User > 15
+	STA	TABUSR
+	MOV	A,B
+	ORA	A
+	JZ	TP$NP		;No ':' after user
+	MOV	A,M
+	CPI	':'
+	JNZ	TP$NP		;Must end with ':'
+	INX	H
 	DCR	B
 	JMP	TP$PFX
 TP$NP:
@@ -1908,10 +1941,10 @@ SHSUM:
 	CALL	CRLF
 	LXI	D,MSGSRC
 	CALL	PRMSG
-	LDA	SUSR
-	CALL	SHUSR
 	LDA	SDRV
 	CALL	SHDRV
+	LDA	SUSR
+	CALL	SHUSR
 	LXI	H,SFN
 	CALL	SHFN
 	MVI	A,' '
@@ -1929,10 +1962,10 @@ SHSUM:
 	CALL	CRLF
 	LXI	D,MSGDST
 	CALL	PRMSG
-	LDA	DUSR
-	CALL	SHUSR
 	LDA	DDRV
 	CALL	SHDRV
+	LDA	DUSR
+	CALL	SHUSR
 	LXI	H,DFN
 	CALL	SHFN
 	MVI	A,' '
@@ -2157,54 +2190,89 @@ PS$DOT:
 	DCR	B
 	JMP	PSOK
 PS$USR:
+; Parse prefix: drive[user]: or user: or drive:
 	MOV	A,M
-	CPI	'['
-	JNZ	PS$DRV
+	CALL	TOUPR
+	CPI	'A'
+	JC	PS$NU		;Not a letter, try user#
+	CPI	'P'+1
+	JNC	PS$FN		;Not A-P, must be filename
+; First char is A-P, could be drive letter
+	MOV	A,B
+	CPI	2
+	JC	PS$FN		;Only 1 char, no room for ':'
+	PUSH	H
+	INX	H
+	MOV	A,M		;Peek at 2nd char
+	POP	H
+	CPI	':'
+	JZ	PS$DRO		;drive: only
+; 2nd char not ':', check for digit (drive+user)
+	CPI	'0'
+	JC	PS$FN		;Not digit, treat as filename
+	CPI	'9'+1
+	JNC	PS$FN		;Not digit, treat as filename
+; Drive letter + digits: save drive, parse user
+	MOV	A,M
+	CALL	TOUPR
+	SUI	'A'
+	PUSH	H
+	LHLD	TGTPT
+	INX	H
+	MOV	M,A		;Store drive
+	POP	H
 	INX	H
 	DCR	B
-	JZ	PSERR
+	CALL	PDEC		;Parse user number
+	JC	PSERR
+	CPI	16
+	JNC	PSERR
+	PUSH	H
+	LHLD	TGTPT
+	MOV	M,A		;Store user
+	POP	H
+	MOV	A,M
+	CPI	':'
+	JNZ	PSERR		;Must end with ':'
+	INX	H
+	DCR	B
+	JMP	PS$FN
+PS$DRO:
+; Drive letter only (e.g. A:)
+	MOV	A,M
+	CALL	TOUPR
+	SUI	'A'
+	PUSH	H
+	LHLD	TGTPT
+	INX	H
+	MOV	M,A		;Store drive
+	POP	H
+	INX	H
+	INX	H
+	DCR	B
+	DCR	B
+	JMP	PS$FN
+PS$NU:
+; First char not a letter - try user number
+	CPI	'0'
+	JC	PS$FN		;Not digit, must be filename
+	CPI	'9'+1
+	JNC	PS$FN		;Not digit, must be filename
 	CALL	PDEC
 	JC	PSERR
 	CPI	16
 	JNC	PSERR
 	PUSH	H
 	LHLD	TGTPT
-	MOV	M,A
+	MOV	M,A		;Store user
 	POP	H
 	MOV	A,B
 	ORA	A
-	JZ	PSERR
+	JZ	PSERR		;No ':' after user
 	MOV	A,M
-	CPI	']'
+	CPI	':'
 	JNZ	PSERR
 	INX	H
-	DCR	B
-PS$DRV:
-	MOV	A,B
-	ORA	A
-	JZ	PSOK
-	CPI	1
-	JZ	PS$FN
-	PUSH	H
-	INX	H
-	MOV	A,M
-	POP	H
-	CPI	':'
-	JNZ	PS$FN
-	MOV	A,M
-	CALL	TOUPR
-	SUI	'A'
-	JC	PSERR
-	CPI	16
-	JNC	PSERR
-	PUSH	H
-	LHLD	TGTPT
-	INX	H
-	MOV	M,A
-	POP	H
-	INX	H
-	INX	H
-	DCR	B
 	DCR	B
 PS$FN:
 	MOV	A,B
@@ -2622,26 +2690,22 @@ VDERR:
 ; Display: SHUSR, SHDRV, SHFN, DECOUT, COUT, CRLF, PRMSG
 ;========================================================
 SHUSR:
-	PUSH	PSW
-	MVI	A,'['
-	CALL	COUT
-	POP	PSW
+; Display user number (called after SHDRV)
 	CPI	NSPC
 	JNZ	SHU1
 	LDA	CUSR
 SHU1:
 	CALL	DECOUT
-	MVI	A,']'
+	MVI	A,':'
 	JMP	COUT
 ;
 SHDRV:
+; Display drive letter (called before SHUSR)
 	CPI	NSPC
 	JNZ	SHD1
 	LDA	CDRV
 SHD1:
 	ADI	'A'
-	CALL	COUT
-	MVI	A,':'
 	JMP	COUT
 ;
 SHFN:
@@ -2900,7 +2964,7 @@ EXIT:
 MSGBAN:
 	DB	CR,LF
 	DB	'SCOPY v1.0 - Smart Copy for CP/M 2.2'
-	DB	' [Build 7]'
+	DB	' [Build 8]'
 	DB	CR,LF,'$'
 ;
 MSGHLP:
@@ -2910,7 +2974,13 @@ MSGHLP:
 	DB	'       SCOPY [/options]  (interactive with'
 	DB	' TAB completion)'
 	DB	CR,LF,CR,LF
-	DB	'File spec: [user]drive:filename.ext'
+	DB	'File spec: drive[user]:filename.ext'
+	DB	CR,LF
+	DB	'  A:        Current user on drive A'
+	DB	CR,LF
+	DB	'  B3:       User 3 on drive B'
+	DB	CR,LF
+	DB	'  4:        User 4 on current drive'
 	DB	CR,LF
 	DB	'Wildcards: * and ? supported in source'
 	DB	CR,LF
@@ -2933,7 +3003,7 @@ MSGHLP:
 	DB	CR,LF
 	DB	'  SCOPY *.COM B:'
 	DB	CR,LF
-	DB	'  SCOPY [0]A:FILE.TXT [3]B:'
+	DB	'  SCOPY A0:FILE.TXT B3:'
 	DB	CR,LF
 	DB	'  SCOPY FOO.COM B:BAR.COM'
 	DB	CR,LF,'$'
