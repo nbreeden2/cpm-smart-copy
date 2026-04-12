@@ -2791,14 +2791,10 @@ DECOUT:
 	PUSH	B
 	PUSH	D
 	MVI	D,0
-	PUSH	PSW
 	MVI	E,100
 	CALL	DDIG
-	POP	PSW
-	PUSH	PSW
 	MVI	E,10
 	CALL	DDIG
-	POP	PSW
 	ADI	'0'
 	CALL	COUT
 	POP	D
@@ -2964,7 +2960,7 @@ EXIT:
 MSGBAN:
 	DB	CR,LF
 	DB	'SCOPY v1.0 - Smart Copy for CP/M 2.2'
-	DB	' [Build 8]'
+	DB	' [Build 9]'
 	DB	CR,LF,'$'
 ;
 MSGHLP:
