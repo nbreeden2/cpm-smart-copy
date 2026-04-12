@@ -20,14 +20,14 @@ User Manual
 
    Source and destination are file specifications:
 
-     [user]drive:filename.ext
+     drive[user]:filename.ext
 
    All parts are optional:
 
-     [user]   User area 0-15 in brackets. Defaults to
-              the current user area.
-     drive:   Drive letter A-P with colon. Defaults to
-              the current drive.
+     drive    Drive letter A-P. Defaults to the
+              current drive.
+     user    User number 0-15 after the drive letter.
+              Defaults to the current user area.
      filename Filename, 1-8 characters. Wildcards * and ?
               are supported in the source only.
      .ext     Extension, 0-3 characters.
@@ -47,15 +47,15 @@ User Manual
    SCOPY *.MAC B:
      Copy all .MAC files to B:.
 
-   SCOPY [3]FILE.COM [5]B:
+   SCOPY 3:FILE.COM B5:
      Copy FILE.COM from user 3 on the current drive
      to user 5 on B:.
 
-   SCOPY [0]A:*.COM [3]B:
+   SCOPY A0:*.COM B3:
      Copy all .COM files from user 0 on A: to user 3
      on B:.
 
-   SCOPY *.ASM [2]
+   SCOPY *.ASM 2:
      Copy all .ASM files to user 2 on the current drive.
 
    SCOPY FOO.COM B:BAR.COM
@@ -90,7 +90,7 @@ User Manual
 
    Examples:
      SCOPY *.COM B: /V
-     SCOPY *.* [3]B: /RC
+     SCOPY *.* B3: /RC
      SCOPY *.MAC B: /V /Q
 
 
@@ -131,10 +131,10 @@ User Manual
 
    TAB completion works with user area and drive prefixes:
 
-     Source: [2]B:AS    <press TAB>
-     Source: [2]B:ASM.COM
+     Source: B2:AS    <press TAB>
+     Source: B2:ASM.COM
 
-   The user/drive prefix stays on screen; only the
+   The drive/user prefix stays on screen; only the
    filename portion cycles.
 
    TAB is ignored if the partial input contains wildcard
@@ -165,8 +165,8 @@ User Manual
 
    If all checks pass, a summary is displayed:
 
-     Source: [0]A:*.COM (5 files, 48K)
-     Dest:   [3]B:      (112K free, 38 dir entries free)
+     Source: A0:*.COM (5 files, 48K)
+     Dest:   B3:     (112K free, 38 dir entries free)
 
 
 7. COPY OPERATION

@@ -137,7 +137,7 @@ Technical Reference
    PSPEC
      Parses a file specification from the command
      tail or interactive input. Handles the full
-     [user]drive:filename.ext syntax including the
+     drive[user]:filename.ext syntax including the
      "." shorthand for current drive/user. Uses
      TXTPT/TXTCNT for input position and TGTPT for
      the 13-byte output block (user, drive, 11-byte
@@ -208,7 +208,7 @@ Technical Reference
      name padded with ? characters. Always resolves
      the FCB drive byte explicitly (never uses
      default drive 0). Sets PFXLEN to the length of
-     the [user]drive: prefix that stays on screen
+     the drive[user]: prefix that stays on screen
      during completion cycling.
 
    TABSRC
@@ -350,11 +350,11 @@ Technical Reference
      the console with trailing space trimming.
 
    SHUSR
-     Displays a user number in brackets: [N].
+     Displays a user number followed by colon.
      Resolves NSPC to the current user.
 
    SHDRV
-     Displays a drive letter with colon: D:.
+     Displays a drive letter (no colon).
      Resolves NSPC to the current drive.
 
    DECOUT
